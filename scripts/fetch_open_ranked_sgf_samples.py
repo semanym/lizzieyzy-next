@@ -70,9 +70,9 @@ def parse_args() -> argparse.Namespace:
         help="Only keep OGS games on or after this date. Use empty string to disable.",
     )
     parser.add_argument("--jgdb-url", default=JGDB_URL, help="JGDB tar.gz URL.")
-    parser.add_argument("--http-retries", type=int, default=6, help="HTTP open retry attempts.")
-    parser.add_argument("--retry-delay", type=int, default=120, help="Seconds between HTTP retries.")
-    parser.add_argument("--timeout", type=int, default=120, help="HTTP open timeout in seconds.")
+    parser.add_argument("--http-retries", type=int, default=2, help="HTTP open retry attempts.")
+    parser.add_argument("--retry-delay", type=int, default=10, help="Seconds between HTTP retries.")
+    parser.add_argument("--timeout", type=int, default=30, help="HTTP open timeout in seconds.")
     parser.add_argument(
         "--ogs-api-fallback",
         action=argparse.BooleanOptionalAction,

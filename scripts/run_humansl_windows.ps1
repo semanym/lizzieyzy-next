@@ -68,6 +68,16 @@ function New-Sha256File {
     return $Hash
 }
 
+function New-PreflightSgf {
+    param([string]$Path)
+    $Dir = Split-Path -Parent $Path
+    New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+    @"
+(;FF[4]CA[UTF-8]GM[1]DT[2025-01-01]PB[HumanSL preflight black]PW[HumanSL preflight white]BR[2k]WR[2k]RE[B+R]SZ[19]KM[6.5]RU[Chinese]
+;B[pd];W[dd];B[pp];W[dp];B[fq];W[cn];B[nq];W[fc];B[cf];W[qc];B[qd];W[pc];B[oc];W[od];B[nd];W[oe];B[pe];W[ne];B[md];W[of])
+"@ | Set-Content -Path $Path -Encoding UTF8
+}
+
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $RepoRoot
 $DefaultOgsUrl = "https://za3k.com/ogs/ogs_games_2013_to_2025-05/sgfs-by-date.tar.gz"
@@ -81,8 +91,9 @@ $AutoFetchOpenSgfs = Get-EnvOrDefault "AUTO_FETCH_OPEN_SGFS" "1"
 $RefreshSgfs = Get-EnvOrDefault "REFRESH_SGFS" "1"
 $OgsUrl = Normalize-ExternalValue (Get-EnvOrDefault "OGS_URL" $DefaultOgsUrl)
 $OgsMinDate = Normalize-ExternalValue (Get-EnvOrDefault "OGS_MIN_DATE" "2025-01-01")
-$OgsHttpRetries = [int](Get-EnvOrDefault "OGS_HTTP_RETRIES" "6")
-$OgsRetryDelay = [int](Get-EnvOrDefault "OGS_RETRY_DELAY" "120")
+$OgsHttpRetries = [int](Get-EnvOrDefault "OGS_HTTP_RETRIES" "2")
+$OgsRetryDelay = [int](Get-EnvOrDefault "OGS_RETRY_DELAY" "10")
+$OgsTimeout = [int](Get-EnvOrDefault "OGS_TIMEOUT" "30")
 $OgsApiFallback = Get-EnvOrDefault "OGS_API_FALLBACK" "1"
 $OgsApiSleep = Get-EnvOrDefault "OGS_API_SLEEP" "0.5"
 $OgsApiMaxRequests = Get-EnvOrDefault "OGS_API_MAX_REQUESTS" "250000"
@@ -103,6 +114,9 @@ $Rules = Get-EnvOrDefault "RULES" "Chinese"
 $PushResults = Get-EnvOrDefault "PUSH_RESULTS" "1"
 $PushRemote = Get-EnvOrDefault "PUSH_REMOTE" "origin"
 $PushRef = Get-EnvOrDefault "PUSH_REF" "main:main"
+$Preflight = Get-EnvOrDefault "PREFLIGHT" "1"
+$PreflightMaxVisits = [int](Get-EnvOrDefault "PREFLIGHT_MAX_VISITS" "4")
+$PreflightTimeout = [int](Get-EnvOrDefault "PREFLIGHT_KATAGO_RESPONSE_TIMEOUT" "180")
 $Profiles = Get-EnvOrDefault "PROFILES" "rank_18k,rank_17k,rank_16k,rank_15k,rank_14k,rank_13k,rank_12k,rank_11k,rank_10k,rank_9k,rank_8k,rank_7k,rank_6k,rank_5k,rank_4k,rank_3k,rank_2k,rank_1k,rank_1d,rank_2d,rank_3d,rank_4d,rank_5d,rank_6d,rank_7d,rank_8d,rank_9d"
 $LabelRanks = Get-EnvOrDefault "LABEL_RANKS" "18k,17k,16k,15k,14k,13k,12k,11k,10k,9k,8k,7k,6k,5k,4k,3k,2k,1k,1d,2d,3d,4d,5d,6d,7d,8d,9d,10d,11d"
 
@@ -136,11 +150,91 @@ Write-Log "ogs_url=$OgsUrl"
 Write-Log "ogs_min_date=$OgsMinDate"
 Write-Log "ogs_http_retries=$OgsHttpRetries"
 Write-Log "ogs_retry_delay=$OgsRetryDelay"
+Write-Log "ogs_timeout=$OgsTimeout"
 Write-Log "ogs_api_fallback=$OgsApiFallback"
 Write-Log "ogs_api_sleep=$OgsApiSleep"
 Write-Log "ogs_api_max_requests=$OgsApiMaxRequests"
 Write-Log "out=$Out"
 Write-Log "settings per_rank=$PerRank max_visits=$MaxVisits parallel_engines=$ParallelEngines max_moves=$MaxMoves min_moves=$MinMoves"
+
+Invoke-Logged "KataGo version" $Katago @("version")
+$KatagoVersionPath = Join-Path $Out "katago-version.txt"
+& $Katago version 2>&1 | Set-Content -Path $KatagoVersionPath -Encoding UTF8
+$KatagoVersion = (Get-Content -Path $KatagoVersionPath -TotalCount 1)
+$ModelSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $Model).Hash.ToLowerInvariant()
+
+if ($Preflight -eq "1") {
+    $PreflightDir = Join-Path $Out "preflight"
+    $PreflightSgfDir = Join-Path $PreflightDir "sgf\2k"
+    $PreflightSgf = Join-Path $PreflightSgfDir "preflight-2k.sgf"
+    $PreflightJsonl = Join-Path $PreflightDir "evaluation.jsonl"
+    $PreflightBundle = Join-Path $PreflightDir "humansl-preflight.zip"
+    $PreflightMerged = Join-Path $PreflightDir "merged"
+    $PreflightAnalysis = Join-Path $PreflightDir "analysis"
+    if (Test-Path -LiteralPath $PreflightDir -PathType Container) {
+        Remove-Item -LiteralPath $PreflightDir -Recurse -Force
+    }
+    New-PreflightSgf -Path $PreflightSgf
+    Write-Log "preflight enabled: running tiny end-to-end pipeline before full SGF fetch"
+    Invoke-Logged "preflight HumanSL probe" "python" @(
+        "scripts\probe_humansl_feasibility.py",
+        "--katago", $Katago,
+        "--config", $Config,
+        "--model", $Model,
+        "--human-model", $HumanModel,
+        "--profiles", "rank_2k",
+        "--repeats", "1",
+        "--max-queries", "2"
+    )
+    Invoke-Logged "preflight evaluate one SGF" "python" @(
+        "scripts\evaluate_strength_samples.py", "$PreflightSgfDir\*.sgf",
+        "--katago", $Katago,
+        "--model", $Model,
+        "--config", $Config,
+        "--human-model", $HumanModel,
+        "--human-profiles", "rank_2k",
+        "--max-games", "1",
+        "--min-moves", "0",
+        "--max-moves", "20",
+        "--max-visits", "$PreflightMaxVisits",
+        "--human-max-visits", "$HumanMaxVisits",
+        "--batch-positions", "4",
+        "--human-batch-positions", "4",
+        "--parallel-engines", "1",
+        "--katago-response-timeout", "$PreflightTimeout",
+        "--rules", $Rules,
+        "--jsonl", $PreflightJsonl
+    )
+    Invoke-Logged "preflight package result" "python" @(
+        "scripts\humansl_results.py", "package",
+        "--evaluation-jsonl", $PreflightJsonl,
+        "--out", $PreflightBundle,
+        "--machine-id", "${MachineId}-preflight",
+        "--operator", $Operator,
+        "--katago-version", $KatagoVersion,
+        "--katago-binary", $Katago,
+        "--main-model-sha256", $ModelSha,
+        "--profiles", "rank_2k",
+        "--max-visits", "$PreflightMaxVisits",
+        "--human-max-visits", "$HumanMaxVisits",
+        "--rules", $Rules,
+        "--run-log", $RunLog,
+        "--sgf-dir", $PreflightSgfDir,
+        "--note", "Preflight smoke test before full Windows HumanSL calibration."
+    )
+    Invoke-Logged "preflight validate result" "python" @("scripts\humansl_results.py", "validate", $PreflightBundle)
+    Invoke-Logged "preflight merge result" "python" @("scripts\humansl_results.py", "merge", $PreflightBundle, "--out-dir", $PreflightMerged)
+    Invoke-Logged "preflight analyze result" "python" @(
+        "scripts\analyze_strength_calibration.py",
+        (Join-Path $PreflightMerged "evaluation.jsonl"),
+        "--out", $PreflightAnalysis,
+        "--min-samples", "1",
+        "--outlier-z", "3.5"
+    )
+    Write-Log "preflight completed successfully; starting full run"
+} else {
+    Write-Log "preflight disabled by PREFLIGHT=$Preflight"
+}
 
 if ($AutoFetchOpenSgfs -eq "1" -and $RefreshSgfs -eq "1" -and (Test-Path -LiteralPath $SgfByRankRoot -PathType Container)) {
     Write-Log "REFRESH_SGFS=1; removing existing SGF samples at $SgfByRankRoot"
@@ -158,6 +252,7 @@ if (-not (Test-Path -LiteralPath $SgfByRankRoot -PathType Container)) {
             "--ogs-min-date", $OgsMinDate,
             "--http-retries", "$OgsHttpRetries",
             "--retry-delay", "$OgsRetryDelay",
+            "--timeout", "$OgsTimeout",
             "--ogs-api-sleep", "$OgsApiSleep",
             "--ogs-api-max-requests", "$OgsApiMaxRequests",
             "--ranks", $LabelRanks
@@ -169,12 +264,6 @@ if (-not (Test-Path -LiteralPath $SgfByRankRoot -PathType Container)) {
         throw "SGF_BY_RANK_ROOT not found and AUTO_FETCH_OPEN_SGFS is not 1: $SgfByRankRoot"
     }
 }
-
-Invoke-Logged "KataGo version" $Katago @("version")
-$KatagoVersionPath = Join-Path $Out "katago-version.txt"
-& $Katago version 2>&1 | Set-Content -Path $KatagoVersionPath -Encoding UTF8
-$KatagoVersion = (Get-Content -Path $KatagoVersionPath -TotalCount 1)
-$ModelSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $Model).Hash.ToLowerInvariant()
 
 Invoke-Logged "prepare ranked SGFs" "python" @(
     "scripts\prepare_ranked_sgf_samples.py",
