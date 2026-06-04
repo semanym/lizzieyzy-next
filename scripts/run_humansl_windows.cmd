@@ -1,6 +1,9 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0run_humansl_windows.ps1"
+exit /b %ERRORLEVEL%
+
 rem One-click Windows HumanSL calibration run.
 rem Run this file from the repository root on the GPU Windows machine.
 rem Put SGFs under %SGF_BY_RANK_ROOT%\18k ... %SGF_BY_RANK_ROOT%\11d first.
