@@ -62,6 +62,9 @@ $Config = Get-EnvOrDefault "CONFIG" "D:\katago\LizzieYzy Next OpenCL\app\engines
 $HumanModel = Get-EnvOrDefault "HUMAN_MODEL" (Join-Path $RepoRoot "human-sl-models\b18c384nbt-humanv0.bin.gz")
 $SgfByRankRoot = Get-EnvOrDefault "SGF_BY_RANK_ROOT" (Join-Path $RepoRoot "target\humansl-input\sgf-by-rank")
 $AutoFetchOpenSgfs = Get-EnvOrDefault "AUTO_FETCH_OPEN_SGFS" "1"
+$RefreshSgfs = Get-EnvOrDefault "REFRESH_SGFS" "1"
+$OgsUrl = Get-EnvOrDefault "OGS_URL" "https://za3k.com/ogs/ogs_games_2013_to_2025-05/sgfs-by-date.tar.gz"
+$OgsMinDate = Get-EnvOrDefault "OGS_MIN_DATE" "2025-01-01"
 $AllowPartialSgfs = Get-EnvOrDefault "ALLOW_PARTIAL_SGFS" "0"
 $Out = Get-EnvOrDefault "OUT" (Join-Path $RepoRoot "target\humansl-gpu-run")
 $MachineId = Get-EnvOrDefault "MACHINE_ID" "windows-opencl-gpu"
@@ -104,8 +107,15 @@ Write-Log "model=$Model"
 Write-Log "config=$Config"
 Write-Log "human_model=$HumanModel"
 Write-Log "sgf_by_rank_root=$SgfByRankRoot"
+Write-Log "ogs_url=$OgsUrl"
+Write-Log "ogs_min_date=$OgsMinDate"
 Write-Log "out=$Out"
 Write-Log "settings per_rank=$PerRank max_visits=$MaxVisits parallel_engines=$ParallelEngines max_moves=$MaxMoves min_moves=$MinMoves"
+
+if ($AutoFetchOpenSgfs -eq "1" -and $RefreshSgfs -eq "1" -and (Test-Path -LiteralPath $SgfByRankRoot -PathType Container)) {
+    Write-Log "REFRESH_SGFS=1; removing existing SGF samples at $SgfByRankRoot"
+    Remove-Item -LiteralPath $SgfByRankRoot -Recurse -Force
+}
 
 if (-not (Test-Path -LiteralPath $SgfByRankRoot -PathType Container)) {
     if ($AutoFetchOpenSgfs -eq "1") {
@@ -114,6 +124,8 @@ if (-not (Test-Path -LiteralPath $SgfByRankRoot -PathType Container)) {
             "--out", $SgfByRankRoot,
             "--per-rank", "$PerRank",
             "--min-moves", "$MinMoves",
+            "--ogs-url", $OgsUrl,
+            "--ogs-min-date", $OgsMinDate,
             "--ranks", $LabelRanks
         )
         if ($AllowPartialSgfs -eq "1") { $Args += "--allow-partial" }

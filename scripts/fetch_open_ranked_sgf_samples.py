@@ -6,7 +6,7 @@ filled. It is designed for the Windows GPU calibration workflow where there is
 no pre-existing local SGF directory.
 
 Default sources:
-- OGS 2021 Internet Archive SGF dump for ordinary amateur ranks.
+- OGS 2025 SGF dump for ordinary amateur ranks, filtered to recent games.
 - JGDB tarball for professional / top-professional labels.
 
 Rank labeling is intentionally conservative. A game is copied into a rank bucket
@@ -31,8 +31,9 @@ import urllib.request
 from pathlib import Path
 
 
-OGS_IA_SGF_URL = "https://archive.org/download/ogs2021/sgfs-by-date.tar.gz"
+OGS_2025_SGF_URL = "https://za3k.com/ogs/ogs_games_2013_to_2025-05/sgfs-by-date.tar.gz"
 JGDB_URL = "https://data.pjreddie.com/files/jgdb.tar.gz"
+DEFAULT_OGS_MIN_DATE = "2025-01-01"
 DEFAULT_RANKS = [f"{rank}k" for rank in range(18, 0, -1)] + [
     f"{rank}d" for rank in range(1, 13)
 ]
@@ -59,7 +60,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-moves", type=int, default=500, help="Skip very long games.")
     parser.add_argument("--board-size", type=int, default=19, help="Only keep this board size.")
     parser.add_argument("--ranks", default=",".join(DEFAULT_RANKS))
-    parser.add_argument("--ogs-url", default=OGS_IA_SGF_URL, help="OGS SGF tar.gz URL.")
+    parser.add_argument("--ogs-url", default=OGS_2025_SGF_URL, help="OGS SGF tar.gz URL.")
+    parser.add_argument(
+        "--ogs-min-date",
+        default=DEFAULT_OGS_MIN_DATE,
+        help="Only keep OGS games on or after this date. Use empty string to disable.",
+    )
     parser.add_argument("--jgdb-url", default=JGDB_URL, help="JGDB tar.gz URL.")
     parser.add_argument("--skip-ogs", action="store_true", help="Do not fetch OGS samples.")
     parser.add_argument("--skip-jgdb", action="store_true", help="Do not fetch JGDB samples.")
@@ -91,6 +97,7 @@ def main() -> int:
             ordinary_needed,
             counts,
             args,
+            min_date=args.ogs_min_date,
         )
     if not args.skip_jgdb:
         pro_needed = {rank: needed[rank] for rank in ranks if rank in PRO_RANKS}
@@ -101,6 +108,7 @@ def main() -> int:
             pro_needed,
             counts,
             args,
+            min_date="",
         )
 
     missing = [f"{rank}: {counts[rank]}/{needed[rank]}" for rank in ranks if counts[rank] < needed[rank]]
@@ -122,10 +130,13 @@ def stream_source(
     needed: dict[str, int],
     counts: dict[str, int],
     args: argparse.Namespace,
+    min_date: str = "",
 ) -> None:
     if not needed:
         return
     print(f"[fetch] streaming {name}: {url}", flush=True)
+    minimum = parse_date_key(min_date) if min_date else None
+    last_skip_period = ""
     request = urllib.request.Request(
         url,
         headers={
@@ -140,12 +151,24 @@ def stream_source(
                     return
                 if not member.isfile() or not member.name.lower().endswith(".sgf"):
                     continue
+                member_date = date_from_member_name(member.name)
+                if minimum and member_date and member_date < minimum:
+                    skip_period = f"{member_date[0]:04d}-{member_date[1]:02d}"
+                    if skip_period != last_skip_period:
+                        last_skip_period = skip_period
+                        print(
+                            f"[fetch] {name}: scanning {skip_period}; waiting for >= {min_date}",
+                            flush=True,
+                        )
+                    continue
                 extracted = archive.extractfile(member)
                 if extracted is None:
                     continue
                 raw = extracted.read()
                 text = decode_sgf(raw)
                 props = root_properties(text)
+                if minimum and not meets_min_date(member.name, props, min_date):
+                    continue
                 if not acceptable_game(text, props, args):
                     continue
                 rank = game_bucket_rank(props)
@@ -186,6 +209,33 @@ def acceptable_game(text: str, props: dict[str, str], args: argparse.Namespace) 
         return False
     moves = len(re.findall(r";[BW]\[", text))
     return int(args.min_moves) <= moves <= int(args.max_moves)
+
+
+def meets_min_date(member_name: str, props: dict[str, str], min_date: str) -> bool:
+    minimum = parse_date_key(min_date)
+    game_date = date_from_member_name(member_name) or parse_date_key(props.get("DT", ""))
+    if minimum is None or game_date is None:
+        return False
+    return game_date >= minimum
+
+
+def date_from_member_name(member_name: str) -> tuple[int, int, int] | None:
+    match = re.search(r"(20\d{2})[/-](\d{1,2})[/-](\d{1,2})", member_name)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+
+def parse_date_key(text: str) -> tuple[int, int, int] | None:
+    match = re.search(r"(\d{4})(?:[-/.](\d{1,2}))?(?:[-/.](\d{1,2}))?", str(text or ""))
+    if not match:
+        return None
+    year = int(match.group(1))
+    month = int(match.group(2) or 1)
+    day = int(match.group(3) or 1)
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        return None
+    return year, month, day
 
 
 def int_prop(props: dict[str, str], key: str, default: int) -> int:
