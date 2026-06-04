@@ -126,6 +126,7 @@ def main() -> int:
         counts.update(existing_rank_counts(out, ranks))
         initial_counts = dict(counts)
     args._initial_counts = dict(initial_counts)
+    args._accepted_new = 0
     seen_hashes = existing_sgf_hashes(out, ranks) if args.append else set()
 
     if not args.skip_ogs:
@@ -232,6 +233,7 @@ def stream_source(
                     continue
                 seen_hashes.add(digest)
                 counts[rank] += 1
+                args._accepted_new += 1
                 write_ranked_sgf(out, rank, counts[rank], member.name, text)
                 print(f"[fetch] {name}: {rank} {counts[rank]}/{needed[rank]} {member.name}", flush=True)
                 if reached_acceptance_limit(args, counts):
@@ -298,6 +300,15 @@ def sample_ogs_api(
         except urllib.error.HTTPError as exc:
             failures += 1
             if exc.code == 429:
+                if reached_acceptance_limit(args, counts) or (
+                    int(getattr(args, "stop_after_accepted", 0) or 0) > 0
+                    and int(getattr(args, "_accepted_new", 0) or 0) > 0
+                ):
+                    print(
+                        "[fetch] OGS API throttled after accepting SGFs; ending this incremental batch",
+                        flush=True,
+                    )
+                    return
                 delay = max(float(args.ogs_api_sleep) * 10.0, 30.0)
                 print(f"[fetch] OGS API throttled at game {game_id}; sleeping {delay:.1f}s", flush=True)
                 time.sleep(delay)
@@ -329,6 +340,7 @@ def sample_ogs_api(
                     continue
                 seen_hashes.add(digest)
                 counts[rank] += 1
+                args._accepted_new += 1
                 write_ranked_sgf(out, rank, counts[rank], f"ogs-api-{game_id}.sgf", text)
                 print(
                     f"[fetch] OGS API: {rank} {counts[rank]}/{needed[rank]} game {game_id}",
@@ -387,8 +399,7 @@ def reached_acceptance_limit(args: argparse.Namespace, counts: dict[str, int]) -
     limit = int(getattr(args, "stop_after_accepted", 0) or 0)
     if limit <= 0:
         return False
-    accepted = sum(counts.values()) - sum(getattr(args, "_initial_counts", {}).values())
-    return accepted >= limit
+    return int(getattr(args, "_accepted_new", 0) or 0) >= limit
 
 
 def decode_sgf(raw: bytes) -> str:
