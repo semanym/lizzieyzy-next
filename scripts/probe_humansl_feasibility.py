@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import json
 import queue
-import resource
 import subprocess
 import sys
 import threading
@@ -19,6 +18,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
+
+try:
+    import resource
+except ImportError:  # Windows does not provide the Unix resource module.
+    resource = None
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -339,6 +343,8 @@ def run_probe(args: argparse.Namespace) -> list[ProfileProbeResult]:
 
 
 def peak_child_rss_mib() -> float:
+    if resource is None:
+        return 0.0
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     # macOS reports bytes, Linux reports KiB.
     divisor = 1024.0 * 1024.0 if sys.platform == "darwin" else 1024.0
