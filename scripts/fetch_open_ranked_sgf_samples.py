@@ -22,6 +22,7 @@ KataGo, Leela Zero, ELF OpenGo, FineArt, or Golaxy.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import re
 import shutil
@@ -59,6 +60,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True, help="Output rank directory root.")
     parser.add_argument("--per-rank", type=int, default=25, help="Target SGFs per rank bucket.")
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="Keep existing rank directories and continue filling missing buckets.",
+    )
+    parser.add_argument(
+        "--stop-after-accepted",
+        type=int,
+        default=0,
+        help="Stop after accepting this many new SGFs across all buckets. 0 means no early stop.",
+    )
     parser.add_argument("--min-moves", type=int, default=80, help="Skip games shorter than this.")
     parser.add_argument("--max-moves", type=int, default=500, help="Skip very long games.")
     parser.add_argument("--board-size", type=int, default=19, help="Only keep this board size.")
@@ -84,6 +96,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ogs-api-step", type=int, default=1, help="Game id decrement step.")
     parser.add_argument("--ogs-api-sleep", type=float, default=0.5, help="Seconds between OGS API requests.")
     parser.add_argument("--ogs-api-max-requests", type=int, default=250000, help="Maximum OGS API SGF requests.")
+    parser.add_argument(
+        "--prefer-ogs-api",
+        action="store_true",
+        help="Use the OGS game API directly instead of opening the bulk dump first.",
+    )
     parser.add_argument("--skip-ogs", action="store_true", help="Do not fetch OGS samples.")
     parser.add_argument("--skip-jgdb", action="store_true", help="Do not fetch JGDB samples.")
     parser.add_argument(
@@ -100,32 +117,43 @@ def main() -> int:
     ranks = [rank.strip() for rank in args.ranks.split(",") if rank.strip()]
     needed = {rank: int(args.per_rank) for rank in ranks}
     counts = {rank: 0 for rank in ranks}
+    initial_counts = dict(counts)
 
-    if out.exists():
+    if out.exists() and not args.append:
         shutil.rmtree(out)
     out.mkdir(parents=True, exist_ok=True)
+    if args.append:
+        counts.update(existing_rank_counts(out, ranks))
+        initial_counts = dict(counts)
+    args._initial_counts = dict(initial_counts)
+    seen_hashes = existing_sgf_hashes(out, ranks) if args.append else set()
 
     if not args.skip_ogs:
         ordinary_needed = {rank: needed[rank] for rank in ranks if rank in ORDINARY_RANKS}
-        try:
-            stream_source(
-                "OGS",
-                args.ogs_url,
-                out,
-                ordinary_needed,
-                counts,
-                args,
-                min_date=args.ogs_min_date,
-            )
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
-            if not args.ogs_api_fallback:
-                raise
-            print(
-                f"[fetch] OGS dump unavailable ({exc}); falling back to OGS game API",
-                file=sys.stderr,
-                flush=True,
-            )
-            sample_ogs_api(out, ordinary_needed, counts, args)
+        if args.prefer_ogs_api:
+            print("[fetch] using OGS game API before the bulk dump", flush=True)
+            sample_ogs_api(out, ordinary_needed, counts, seen_hashes, args)
+        else:
+            try:
+                stream_source(
+                    "OGS",
+                    args.ogs_url,
+                    out,
+                    ordinary_needed,
+                    counts,
+                    seen_hashes,
+                    args,
+                    min_date=args.ogs_min_date,
+                )
+            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+                if not args.ogs_api_fallback:
+                    raise
+                print(
+                    f"[fetch] OGS dump unavailable ({exc}); falling back to OGS game API",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                sample_ogs_api(out, ordinary_needed, counts, seen_hashes, args)
     if not args.skip_jgdb:
         pro_needed = {rank: needed[rank] for rank in ranks if rank in PRO_RANKS}
         stream_source(
@@ -134,13 +162,16 @@ def main() -> int:
             out,
             pro_needed,
             counts,
+            seen_hashes,
             args,
             min_date="",
         )
 
+    accepted = sum(counts[rank] - initial_counts.get(rank, 0) for rank in ranks)
     missing = [f"{rank}: {counts[rank]}/{needed[rank]}" for rank in ranks if counts[rank] < needed[rank]]
     for rank in ranks:
         print(f"[fetch] {rank}: {counts[rank]} SGFs")
+    print(f"[fetch] accepted_new: {accepted} SGFs")
     if missing:
         print("[warn] incomplete rank buckets:", file=sys.stderr)
         for item in missing:
@@ -156,6 +187,7 @@ def stream_source(
     out: Path,
     needed: dict[str, int],
     counts: dict[str, int],
+    seen_hashes: set[str],
     args: argparse.Namespace,
     min_date: str = "",
 ) -> None:
@@ -195,9 +227,16 @@ def stream_source(
                 rank = game_bucket_rank(props)
                 if rank not in needed or counts[rank] >= needed[rank]:
                     continue
+                digest = ranked_sgf_hash(rank, text)
+                if digest in seen_hashes:
+                    continue
+                seen_hashes.add(digest)
                 counts[rank] += 1
                 write_ranked_sgf(out, rank, counts[rank], member.name, text)
                 print(f"[fetch] {name}: {rank} {counts[rank]}/{needed[rank]} {member.name}", flush=True)
+                if reached_acceptance_limit(args, counts):
+                    print(f"[fetch] {name}: accepted SGF limit reached", flush=True)
+                    return
 
 
 def open_url_with_retries(url: str, retries: int, retry_delay: int, timeout: int):
@@ -232,6 +271,7 @@ def sample_ogs_api(
     out: Path,
     needed: dict[str, int],
     counts: dict[str, int],
+    seen_hashes: set[str],
     args: argparse.Namespace,
 ) -> None:
     if not needed:
@@ -282,12 +322,21 @@ def sample_ogs_api(
         if acceptable_game(text, props, args):
             rank = game_bucket_rank(props)
             if rank in needed and counts[rank] < needed[rank]:
+                digest = ranked_sgf_hash(rank, text)
+                if digest in seen_hashes:
+                    game_id -= step
+                    time.sleep(max(0.0, float(args.ogs_api_sleep)))
+                    continue
+                seen_hashes.add(digest)
                 counts[rank] += 1
                 write_ranked_sgf(out, rank, counts[rank], f"ogs-api-{game_id}.sgf", text)
                 print(
                     f"[fetch] OGS API: {rank} {counts[rank]}/{needed[rank]} game {game_id}",
                     flush=True,
                 )
+                if reached_acceptance_limit(args, counts):
+                    print("[fetch] OGS API fallback: accepted SGF limit reached", flush=True)
+                    return
         if scanned % 250 == 0:
             filled = ", ".join(f"{rank}:{counts[rank]}/{needed[rank]}" for rank in sorted(needed))
             print(f"[fetch] OGS API progress scanned={scanned} failures={failures} {filled}", flush=True)
@@ -305,6 +354,41 @@ def fetch_text_url(url: str, timeout: int) -> str:
     with urllib.request.urlopen(request, timeout=timeout) as response:
         raw = response.read()
     return decode_sgf(raw)
+
+
+def existing_rank_counts(out: Path, ranks: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for rank in ranks:
+        rank_dir = out / rank
+        counts[rank] = len(list(rank_dir.glob("*.sgf"))) if rank_dir.exists() else 0
+    return counts
+
+
+def existing_sgf_hashes(out: Path, ranks: list[str]) -> set[str]:
+    hashes: set[str] = set()
+    for rank in ranks:
+        rank_dir = out / rank
+        if not rank_dir.exists():
+            continue
+        for path in rank_dir.glob("*.sgf"):
+            hashes.add(text_hash(path.read_text(encoding="utf-8", errors="replace")))
+    return hashes
+
+
+def ranked_sgf_hash(rank: str, text: str) -> str:
+    return text_hash(rewrite_root_ranks(text, rank))
+
+
+def text_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+
+def reached_acceptance_limit(args: argparse.Namespace, counts: dict[str, int]) -> bool:
+    limit = int(getattr(args, "stop_after_accepted", 0) or 0)
+    if limit <= 0:
+        return False
+    accepted = sum(counts.values()) - sum(getattr(args, "_initial_counts", {}).values())
+    return accepted >= limit
 
 
 def decode_sgf(raw: bytes) -> str:

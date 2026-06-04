@@ -536,6 +536,9 @@ def main() -> int:
         games = [game for game in games if game_key(game.path) not in completed_games]
     games = games[: max(args.max_games, 0)]
     if not games:
+        if args.resume_jsonl and completed_games:
+            print("No SGF files matched the requested filters; all matched games are already complete.")
+            return 0
         print("No SGF files matched the requested filters.", file=sys.stderr)
         return 1
 

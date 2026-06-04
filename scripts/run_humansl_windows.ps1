@@ -78,6 +78,14 @@ function New-PreflightSgf {
 "@ | Set-Content -Path $Path -Encoding UTF8
 }
 
+function Get-SgfCount {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return 0
+    }
+    return @(Get-ChildItem -LiteralPath $Path -Recurse -Filter "*.sgf" -File).Count
+}
+
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $RepoRoot
 $DefaultOgsUrl = "https://za3k.com/ogs/ogs_games_2013_to_2025-05/sgfs-by-date.tar.gz"
@@ -88,7 +96,7 @@ $Config = Normalize-ExternalValue (Get-EnvOrDefault "CONFIG" "D:\katago\LizzieYz
 $HumanModel = Normalize-ExternalValue (Get-EnvOrDefault "HUMAN_MODEL" (Join-Path $RepoRoot "human-sl-models\b18c384nbt-humanv0.bin.gz"))
 $SgfByRankRoot = Normalize-ExternalValue (Get-EnvOrDefault "SGF_BY_RANK_ROOT" (Join-Path $RepoRoot "target\humansl-input\sgf-by-rank"))
 $AutoFetchOpenSgfs = Get-EnvOrDefault "AUTO_FETCH_OPEN_SGFS" "1"
-$RefreshSgfs = Get-EnvOrDefault "REFRESH_SGFS" "1"
+$RefreshSgfs = Get-EnvOrDefault "REFRESH_SGFS" "0"
 $OgsUrl = Normalize-ExternalValue (Get-EnvOrDefault "OGS_URL" $DefaultOgsUrl)
 $OgsMinDate = Normalize-ExternalValue (Get-EnvOrDefault "OGS_MIN_DATE" "2025-01-01")
 $OgsHttpRetries = [int](Get-EnvOrDefault "OGS_HTTP_RETRIES" "2")
@@ -97,6 +105,8 @@ $OgsTimeout = [int](Get-EnvOrDefault "OGS_TIMEOUT" "30")
 $OgsApiFallback = Get-EnvOrDefault "OGS_API_FALLBACK" "1"
 $OgsApiSleep = Get-EnvOrDefault "OGS_API_SLEEP" "0.5"
 $OgsApiMaxRequests = Get-EnvOrDefault "OGS_API_MAX_REQUESTS" "250000"
+$IncrementalFirstBatch = [int](Get-EnvOrDefault "INCREMENTAL_FIRST_BATCH" "8")
+$IncrementalMaxRequests = Get-EnvOrDefault "INCREMENTAL_OGS_API_MAX_REQUESTS" "5000"
 $AllowPartialSgfs = Get-EnvOrDefault "ALLOW_PARTIAL_SGFS" "0"
 $Out = Normalize-ExternalValue (Get-EnvOrDefault "OUT" (Join-Path $RepoRoot "target\humansl-gpu-run"))
 $MachineId = Get-EnvOrDefault "MACHINE_ID" "windows-opencl-gpu"
@@ -154,6 +164,8 @@ Write-Log "ogs_timeout=$OgsTimeout"
 Write-Log "ogs_api_fallback=$OgsApiFallback"
 Write-Log "ogs_api_sleep=$OgsApiSleep"
 Write-Log "ogs_api_max_requests=$OgsApiMaxRequests"
+Write-Log "incremental_first_batch=$IncrementalFirstBatch"
+Write-Log "incremental_ogs_api_max_requests=$IncrementalMaxRequests"
 Write-Log "out=$Out"
 Write-Log "settings per_rank=$PerRank max_visits=$MaxVisits parallel_engines=$ParallelEngines max_moves=$MaxMoves min_moves=$MinMoves"
 
@@ -242,8 +254,9 @@ if ($AutoFetchOpenSgfs -eq "1" -and $RefreshSgfs -eq "1" -and (Test-Path -Litera
     Remove-Item -LiteralPath $SgfByRankRoot -Recurse -Force
 }
 
-if (-not (Test-Path -LiteralPath $SgfByRankRoot -PathType Container)) {
-    if ($AutoFetchOpenSgfs -eq "1") {
+if ($AutoFetchOpenSgfs -eq "1") {
+    if ($IncrementalFirstBatch -gt 0) {
+        $IncrementalRanks = "18k,17k,16k,15k,14k,13k,12k,11k,10k,9k,8k,7k,6k,5k,4k,3k,2k,1k,1d,2d,3d,4d,5d,6d,7d,8d,9d"
         $Args = @(
             "scripts\fetch_open_ranked_sgf_samples.py",
             "--out", $SgfByRankRoot,
@@ -255,24 +268,98 @@ if (-not (Test-Path -LiteralPath $SgfByRankRoot -PathType Container)) {
             "--retry-delay", "$OgsRetryDelay",
             "--timeout", "$OgsTimeout",
             "--ogs-api-sleep", "$OgsApiSleep",
-            "--ogs-api-max-requests", "$OgsApiMaxRequests",
-            "--ranks", $LabelRanks
+            "--ogs-api-max-requests", "$IncrementalMaxRequests",
+            "--ranks", $IncrementalRanks,
+            "--append",
+            "--prefer-ogs-api",
+            "--stop-after-accepted", "$IncrementalFirstBatch",
+            "--skip-jgdb",
+            "--allow-partial"
         )
         if ($OgsApiFallback -ne "1") { $Args += "--no-ogs-api-fallback" }
-        if ($AllowPartialSgfs -eq "1") { $Args += "--allow-partial" }
-        Invoke-Logged "fetch open SGF samples" "python" $Args
-    } else {
-        throw "SGF_BY_RANK_ROOT not found and AUTO_FETCH_OPEN_SGFS is not 1: $SgfByRankRoot"
+        Invoke-Logged "fetch first incremental SGF batch" "python" $Args
+
+        if ((Get-SgfCount $SgfByRankRoot) -gt 0) {
+            Invoke-Logged "prepare first incremental SGF batch" "python" @(
+                "scripts\prepare_ranked_sgf_samples.py",
+                "--input-root", $SgfByRankRoot,
+                "--out", $PreparedSgf,
+                "--per-rank", "$PerRank",
+                "--ranks", $LabelRanks,
+                "--allow-partial"
+            )
+            if ((Get-SgfCount $PreparedSgf) -gt 0) {
+                Invoke-Logged "evaluate first incremental SGF batch" "python" @(
+                    "scripts\evaluate_strength_samples.py", "$PreparedSgf\**\*.sgf",
+                    "--katago", $Katago,
+                    "--model", $Model,
+                    "--config", $Config,
+                    "--human-model", $HumanModel,
+                    "--human-profiles", $Profiles,
+                    "--max-games", "100000",
+                    "--min-moves", "$MinMoves",
+                    "--max-moves", "$MaxMoves",
+                    "--max-visits", "$MaxVisits",
+                    "--human-max-visits", "$HumanMaxVisits",
+                    "--batch-positions", "$BatchPositions",
+                    "--human-batch-positions", "$HumanBatchPositions",
+                    "--parallel-engines", "$ParallelEngines",
+                    "--katago-response-timeout", "$KatagoResponseTimeout",
+                    "--rules", $Rules,
+                    "--resume-jsonl",
+                    "--jsonl", $EvaluationJsonl
+                )
+            } else {
+                Write-Log "first incremental prepare produced no SGFs; continuing to full fetch"
+            }
+        } else {
+            Write-Log "first incremental fetch produced no SGFs; continuing to full fetch"
+        }
     }
+
+    $Args = @(
+        "scripts\fetch_open_ranked_sgf_samples.py",
+        "--out", $SgfByRankRoot,
+        "--per-rank", "$PerRank",
+        "--min-moves", "$MinMoves",
+        "--ogs-url", $OgsUrl,
+        "--ogs-min-date", $OgsMinDate,
+        "--http-retries", "$OgsHttpRetries",
+        "--retry-delay", "$OgsRetryDelay",
+        "--timeout", "$OgsTimeout",
+        "--ogs-api-sleep", "$OgsApiSleep",
+        "--ogs-api-max-requests", "$OgsApiMaxRequests",
+        "--ranks", $LabelRanks,
+        "--append"
+    )
+    if ($OgsApiFallback -ne "1") { $Args += "--no-ogs-api-fallback" }
+    if ($AllowPartialSgfs -eq "1") { $Args += "--allow-partial" }
+    Invoke-Logged "fetch remaining SGF samples" "python" $Args
+} elseif (-not (Test-Path -LiteralPath $SgfByRankRoot -PathType Container)) {
+    throw "SGF_BY_RANK_ROOT not found and AUTO_FETCH_OPEN_SGFS is not 1: $SgfByRankRoot"
 }
 
-Invoke-Logged "prepare ranked SGFs" "python" @(
-    "scripts\prepare_ranked_sgf_samples.py",
-    "--input-root", $SgfByRankRoot,
-    "--out", $PreparedSgf,
-    "--per-rank", "$PerRank",
-    "--ranks", $LabelRanks
-)
+if ((Get-SgfCount $SgfByRankRoot) -le 0) {
+    throw "No SGF samples were collected under $SgfByRankRoot"
+}
+
+if ($AutoFetchOpenSgfs -ne "1") {
+    Invoke-Logged "prepare ranked SGFs" "python" @(
+        "scripts\prepare_ranked_sgf_samples.py",
+        "--input-root", $SgfByRankRoot,
+        "--out", $PreparedSgf,
+        "--per-rank", "$PerRank",
+        "--ranks", $LabelRanks
+    )
+} else {
+    Invoke-Logged "prepare final ranked SGFs" "python" @(
+        "scripts\prepare_ranked_sgf_samples.py",
+        "--input-root", $SgfByRankRoot,
+        "--out", $PreparedSgf,
+        "--per-rank", "$PerRank",
+        "--ranks", $LabelRanks
+    )
+}
 
 Invoke-Logged "probe HumanSL support" "python" @(
     "scripts\probe_humansl_feasibility.py",
