@@ -105,8 +105,9 @@ $OgsTimeout = [int](Get-EnvOrDefault "OGS_TIMEOUT" "30")
 $OgsApiFallback = Get-EnvOrDefault "OGS_API_FALLBACK" "1"
 $OgsApiSleep = Get-EnvOrDefault "OGS_API_SLEEP" "0.5"
 $OgsApiMaxRequests = Get-EnvOrDefault "OGS_API_MAX_REQUESTS" "250000"
+$OgsApiProgressInterval = Get-EnvOrDefault "OGS_API_PROGRESS_INTERVAL" "25"
 $IncrementalFirstBatch = [int](Get-EnvOrDefault "INCREMENTAL_FIRST_BATCH" "8")
-$IncrementalMaxRequests = Get-EnvOrDefault "INCREMENTAL_OGS_API_MAX_REQUESTS" "5000"
+$IncrementalMaxRequests = Get-EnvOrDefault "INCREMENTAL_OGS_API_MAX_REQUESTS" "1000"
 $AllowPartialSgfs = Get-EnvOrDefault "ALLOW_PARTIAL_SGFS" "0"
 $Out = Normalize-ExternalValue (Get-EnvOrDefault "OUT" (Join-Path $RepoRoot "target\humansl-gpu-run"))
 $MachineId = Get-EnvOrDefault "MACHINE_ID" "windows-opencl-gpu"
@@ -164,6 +165,7 @@ Write-Log "ogs_timeout=$OgsTimeout"
 Write-Log "ogs_api_fallback=$OgsApiFallback"
 Write-Log "ogs_api_sleep=$OgsApiSleep"
 Write-Log "ogs_api_max_requests=$OgsApiMaxRequests"
+Write-Log "ogs_api_progress_interval=$OgsApiProgressInterval"
 Write-Log "incremental_first_batch=$IncrementalFirstBatch"
 Write-Log "incremental_ogs_api_max_requests=$IncrementalMaxRequests"
 Write-Log "out=$Out"
@@ -269,6 +271,7 @@ if ($AutoFetchOpenSgfs -eq "1") {
             "--timeout", "$OgsTimeout",
             "--ogs-api-sleep", "$OgsApiSleep",
             "--ogs-api-max-requests", "$IncrementalMaxRequests",
+            "--ogs-api-progress-interval", "$OgsApiProgressInterval",
             "--ranks", $IncrementalRanks,
             "--append",
             "--prefer-ogs-api",
@@ -329,6 +332,7 @@ if ($AutoFetchOpenSgfs -eq "1") {
         "--timeout", "$OgsTimeout",
         "--ogs-api-sleep", "$OgsApiSleep",
         "--ogs-api-max-requests", "$OgsApiMaxRequests",
+        "--ogs-api-progress-interval", "$OgsApiProgressInterval",
         "--ranks", $LabelRanks,
         "--append"
     )

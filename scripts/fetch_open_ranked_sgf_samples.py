@@ -97,6 +97,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ogs-api-sleep", type=float, default=0.5, help="Seconds between OGS API requests.")
     parser.add_argument("--ogs-api-max-requests", type=int, default=250000, help="Maximum OGS API SGF requests.")
     parser.add_argument(
+        "--ogs-api-progress-interval",
+        type=int,
+        default=25,
+        help="Print OGS API fallback progress every N requests.",
+    )
+    parser.add_argument(
         "--prefer-ogs-api",
         action="store_true",
         help="Use the OGS game API directly instead of opening the bulk dump first.",
@@ -282,6 +288,7 @@ def sample_ogs_api(
     stop = int(args.ogs_api_min)
     step = max(1, int(args.ogs_api_step))
     max_requests = max(1, int(args.ogs_api_max_requests))
+    progress_interval = max(1, int(args.ogs_api_progress_interval))
     scanned = 0
     failures = 0
     game_id = start
@@ -294,6 +301,13 @@ def sample_ogs_api(
             print("[fetch] OGS API fallback: quotas satisfied", flush=True)
             return
         scanned += 1
+        if scanned == 1 or scanned % progress_interval == 0:
+            accepted = int(getattr(args, "_accepted_new", 0) or 0)
+            print(
+                f"[fetch] OGS API heartbeat scanned={scanned}/{max_requests} "
+                f"accepted_new={accepted} failures={failures} next_game={game_id}",
+                flush=True,
+            )
         url = OGS_GAME_SGF_URL.format(game_id=game_id)
         try:
             text = fetch_text_url(url, args.timeout)
@@ -349,7 +363,7 @@ def sample_ogs_api(
                 if reached_acceptance_limit(args, counts):
                     print("[fetch] OGS API fallback: accepted SGF limit reached", flush=True)
                     return
-        if scanned % 250 == 0:
+        if scanned % progress_interval == 0:
             filled = ", ".join(f"{rank}:{counts[rank]}/{needed[rank]}" for rank in sorted(needed))
             print(f"[fetch] OGS API progress scanned={scanned} failures={failures} {filled}", flush=True)
         game_id -= step
