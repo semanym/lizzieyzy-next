@@ -17,6 +17,10 @@ LEGACY_WINDOWS64_ZIP="${LEGACY_WINDOWS64_ZIP:-0}"
 LEGACY_WINDOWS32_ZIP="${LEGACY_WINDOWS32_ZIP:-0}"
 LEGACY_OTHER_SYSTEMS_ZIP="${LEGACY_OTHER_SYSTEMS_ZIP:-0}"
 ENGINE_BACKEND_MARKER_NAME="lizzieyzy-next-engine-backend.txt"
+HUMAN_SL_MODEL_FILE_NAME="b18c384nbt-humanv0.bin.gz"
+HUMAN_SL_MODEL_SHA256="637746e44f0efe00ad1245a50aa9bbf0716efe364c43965ead97bd6835d84ab5"
+HUMAN_SL_MODEL_BYTES="99066230"
+HUMAN_SL_MODEL_SOURCE="$ROOT_DIR/human-sl-models/$HUMAN_SL_MODEL_FILE_NAME"
 LINUX_STANDARD_ENGINE_PLATFORM_DIR="${LINUX_STANDARD_ENGINE_PLATFORM_DIR:-linux-x64}"
 LINUX_OPENCL_ENGINE_PLATFORM_DIR="${LINUX_OPENCL_ENGINE_PLATFORM_DIR:-linux-x64-opencl}"
 LINUX_NVIDIA_ENGINE_PLATFORM_DIR="${LINUX_NVIDIA_ENGINE_PLATFORM_DIR:-linux-x64-nvidia}"
@@ -161,6 +165,40 @@ copy_desktop_helper_assets() {
   fi
 }
 
+verify_humansl_model_file() {
+  local model_path="$1"
+  local actual_bytes
+  local actual_sha
+
+  if [[ ! -f "$model_path" ]]; then
+    echo "Missing bundled HumanSL model: $model_path"
+    exit 1
+  fi
+  actual_bytes="$(wc -c <"$model_path" | tr -d '[:space:]')"
+  if [[ "$actual_bytes" != "$HUMAN_SL_MODEL_BYTES" ]]; then
+    echo "Unexpected HumanSL model size: $model_path"
+    echo "Expected: $HUMAN_SL_MODEL_BYTES bytes"
+    echo "Actual:   $actual_bytes bytes"
+    exit 1
+  fi
+  actual_sha="$(shasum -a 256 "$model_path" | awk '{print $1}')"
+  if [[ "$actual_sha" != "$HUMAN_SL_MODEL_SHA256" ]]; then
+    echo "Unexpected HumanSL model SHA256: $model_path"
+    echo "Expected: $HUMAN_SL_MODEL_SHA256"
+    echo "Actual:   $actual_sha"
+    exit 1
+  fi
+}
+
+copy_humansl_model() {
+  local app_dir="$1"
+
+  verify_humansl_model_file "$HUMAN_SL_MODEL_SOURCE"
+  mkdir -p "$app_dir/human-sl-models"
+  cp "$HUMAN_SL_MODEL_SOURCE" "$app_dir/human-sl-models/$HUMAN_SL_MODEL_FILE_NAME"
+  verify_humansl_model_file "$app_dir/human-sl-models/$HUMAN_SL_MODEL_FILE_NAME"
+}
+
 write_linux_install_note() {
   local cpu_asset_path="$1"
   local opencl_asset_path="$2"
@@ -227,6 +265,7 @@ make_bundle() {
   cp "$JAR_PATH" "$app/"
   cp LICENSE.txt README.md README_EN.md README_JA.md README_KO.md readme_cn.pdf readme_en.pdf packaging/PROJECT_INFO.txt "$app/"
   copy_desktop_helper_assets "$app"
+  copy_humansl_model "$app"
   copy_bundle_engine_assets "$app" "$engine_platforms"
   copy_bundle_runtime_assets "$app" "$runtime_platform"
 

@@ -14,6 +14,8 @@ import featurecat.lizzie.analysis.CaptureTsumeGo;
 import featurecat.lizzie.analysis.ContributeEngine;
 import featurecat.lizzie.analysis.EngineManager;
 import featurecat.lizzie.analysis.GameInfo;
+import featurecat.lizzie.analysis.HumanSlAnalysisRunner;
+import featurecat.lizzie.analysis.HumanSlFeatureExtractor;
 import featurecat.lizzie.analysis.KataEstimate;
 import featurecat.lizzie.analysis.Leelaz;
 import featurecat.lizzie.analysis.MoveData;
@@ -34,6 +36,8 @@ import featurecat.lizzie.rules.NodeInfo;
 import featurecat.lizzie.rules.SGFParser;
 import featurecat.lizzie.rules.Stone;
 import featurecat.lizzie.theme.MorandiPalette;
+import featurecat.lizzie.util.AnalysisEngineCommandHelper;
+import featurecat.lizzie.util.KataGoAutoSetupHelper;
 import featurecat.lizzie.util.Utils;
 import featurecat.lizzie.util.YikeSyncDebugLog;
 import java.awt.*;
@@ -63,7 +67,10 @@ import java.awt.image.AffineTransformOp;
 import java.awt.image.BufferedImage;
 import java.awt.image.RenderedImage;
 import java.io.*;
+import java.nio.file.Path;
+import java.text.MessageFormat;
 import java.text.SimpleDateFormat;
+import java.time.Duration;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.Executors;
@@ -12913,8 +12920,10 @@ public class LizzieFrame extends JFrame {
       Utils.showMsg(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.needMoreData"), this);
       return;
     }
+    BoardHistoryNode humanSlEndNode = Lizzie.board.getHistory().getMainEnd();
     PlayerStrengthEstimator.Report report =
         PlayerStrengthEstimator.estimate(Lizzie.board.getHistory().getStart());
+    PlayerStrengthHumanSlReport humanSlReport = initialPlayerStrengthHumanSlReport();
     String title = Lizzie.resourceBundle.getString("PlayerStrengthEstimate.title");
     JDialog dialog = new JDialog(this, title, true);
     dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
@@ -12924,7 +12933,7 @@ public class LizzieFrame extends JFrame {
     tabbedPane.setFont(new Font(Config.sysDefaultFontName, Font.PLAIN, Config.frameFontSize));
     tabbedPane.addTab(
         Lizzie.resourceBundle.getString("PlayerStrengthEstimate.tab.assessment"),
-        buildPlayerStrengthAssessmentPanel(report));
+        buildPlayerStrengthAssessmentPanel(report, humanSlReport));
     tabbedPane.addTab(
         Lizzie.resourceBundle.getString("PlayerStrengthEstimate.tab.match"),
         buildPlayerStrengthMatchPanel(report));
@@ -12932,23 +12941,27 @@ public class LizzieFrame extends JFrame {
     dialog.setMinimumSize(new Dimension(720, 360));
     Lizzie.setFrameSize(dialog, 860, 390);
     dialog.setLocationRelativeTo(this);
+    startPlayerStrengthHumanSlAnalysisIfNeeded(
+        dialog, tabbedPane, report, humanSlReport, humanSlEndNode);
     dialog.setVisible(true);
   }
 
-  private JComponent buildPlayerStrengthAssessmentPanel(PlayerStrengthEstimator.Report report) {
+  private JComponent buildPlayerStrengthAssessmentPanel(
+      PlayerStrengthEstimator.Report report, PlayerStrengthHumanSlReport humanSlReport) {
     JEditorPane htmlPane = new JEditorPane();
     htmlPane.setContentType("text/html");
     htmlPane.putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, Boolean.TRUE);
     htmlPane.setEditable(false);
     htmlPane.setOpaque(false);
     htmlPane.setFont(new Font(Config.sysDefaultFontName, Font.PLAIN, Config.frameFontSize));
-    htmlPane.setText(buildPlayerStrengthEstimateHtml(report));
+    htmlPane.setText(buildPlayerStrengthEstimateHtml(report, humanSlReport));
     htmlPane.setCaretPosition(0);
 
     JScrollPane scrollPane = new JScrollPane(htmlPane);
     scrollPane.setBorder(new EmptyBorder(10, 10, 10, 10));
     scrollPane.getViewport().setOpaque(false);
     scrollPane.setOpaque(false);
+    scrollPane.putClientProperty("playerStrengthHtmlPane", htmlPane);
     return scrollPane;
   }
 
@@ -12960,7 +12973,8 @@ public class LizzieFrame extends JFrame {
     return panel;
   }
 
-  private String buildPlayerStrengthEstimateHtml(PlayerStrengthEstimator.Report report) {
+  private String buildPlayerStrengthEstimateHtml(
+      PlayerStrengthEstimator.Report report, PlayerStrengthHumanSlReport humanSlReport) {
     StringBuilder html = new StringBuilder();
     html.append("<html><body style='width:520px'>");
     html.append("<h2>")
@@ -13004,6 +13018,7 @@ public class LizzieFrame extends JFrame {
     appendPlayerStrengthRow(html, Lizzie.resourceBundle.getString("Menu.Black"), report.black);
     appendPlayerStrengthRow(html, Lizzie.resourceBundle.getString("Menu.White"), report.white);
     html.append("</table>");
+    appendPlayerStrengthHumanSlSection(html, humanSlReport);
     html.append("<p>")
         .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.note"))
         .append("</p>");
@@ -13042,6 +13057,185 @@ public class LizzieFrame extends JFrame {
         .append("</td></tr>");
   }
 
+  private PlayerStrengthHumanSlReport initialPlayerStrengthHumanSlReport() {
+    KataGoAutoSetupHelper.HumanSlModelStatus status = KataGoAutoSetupHelper.inspectHumanSlModel();
+    if (status == null || !status.isInstalled()) {
+      return PlayerStrengthHumanSlReport.unavailable(
+          Lizzie.resourceBundle.getString("PlayerStrengthEstimate.humanSl.status.notInstalled"));
+    }
+    return PlayerStrengthHumanSlReport.analyzing(status.modelPath);
+  }
+
+  private void startPlayerStrengthHumanSlAnalysisIfNeeded(
+      JDialog dialog,
+      JTabbedPane tabbedPane,
+      PlayerStrengthEstimator.Report strengthReport,
+      PlayerStrengthHumanSlReport initialHumanSlReport,
+      BoardHistoryNode humanSlEndNode) {
+    if (initialHumanSlReport == null || !initialHumanSlReport.shouldAnalyze()) {
+      return;
+    }
+    JEditorPane htmlPane = playerStrengthHtmlPane(tabbedPane);
+    if (htmlPane == null) {
+      return;
+    }
+    PlayerStrengthHumanSlWorker worker =
+        new PlayerStrengthHumanSlWorker(
+            strengthReport, initialHumanSlReport.modelPath, humanSlEndNode, htmlPane);
+    dialog.addWindowListener(
+        new WindowAdapter() {
+          @Override
+          public void windowClosed(WindowEvent e) {
+            worker.cancel(true);
+          }
+
+          @Override
+          public void windowClosing(WindowEvent e) {
+            worker.cancel(true);
+          }
+        });
+    worker.execute();
+  }
+
+  private JEditorPane playerStrengthHtmlPane(JTabbedPane tabbedPane) {
+    if (tabbedPane == null || tabbedPane.getTabCount() == 0) {
+      return null;
+    }
+    Component component = tabbedPane.getComponentAt(0);
+    if (!(component instanceof JComponent)) {
+      return null;
+    }
+    Object value = ((JComponent) component).getClientProperty("playerStrengthHtmlPane");
+    return value instanceof JEditorPane ? (JEditorPane) value : null;
+  }
+
+  private String resolvePlayerStrengthHumanSlAnalysisCommand() {
+    if (Lizzie.config == null) {
+      return "";
+    }
+    if (!Lizzie.config.analysisEngineCommandCustomized) {
+      AnalysisEngineCommandHelper.Result result =
+          AnalysisEngineCommandHelper.fromDefaultEngine(Utils.getEngineData());
+      if (result.isSuccess()) {
+        Lizzie.config.analysisEngineCommand = result.getCommand();
+        if (Lizzie.config.uiConfig != null) {
+          Lizzie.config.uiConfig.put("analysis-engine-command", result.getCommand());
+        }
+        return result.getCommand();
+      }
+      return "";
+    }
+    return Lizzie.config.analysisEngineCommand == null ? "" : Lizzie.config.analysisEngineCommand;
+  }
+
+  private void appendPlayerStrengthHumanSlSection(
+      StringBuilder html, PlayerStrengthHumanSlReport report) {
+    if (report == null) {
+      return;
+    }
+    html.append("<h3>")
+        .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.humanSl.title"))
+        .append("</h3>");
+    html.append("<p>")
+        .append(playerStrengthEscapeHtml(report.statusText))
+        .append(" ")
+        .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.humanSl.experimental"))
+        .append("</p>");
+    if (!report.hasFeatures()) {
+      return;
+    }
+    html.append("<table border='1' cellspacing='0' cellpadding='5'>");
+    html.append("<tr><th>")
+        .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.side"))
+        .append("</th><th>")
+        .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.humanSl.bestRank"))
+        .append("</th><th>")
+        .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.confidence"))
+        .append("</th><th>")
+        .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.moves"))
+        .append("</th><th>")
+        .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.humanSl.curve"))
+        .append("</th></tr>");
+    appendPlayerStrengthHumanSlRow(
+        html, Lizzie.resourceBundle.getString("PlayerStrengthEstimate.overall"), report.overall);
+    appendPlayerStrengthHumanSlRow(
+        html, Lizzie.resourceBundle.getString("Menu.Black"), report.black);
+    appendPlayerStrengthHumanSlRow(
+        html, Lizzie.resourceBundle.getString("Menu.White"), report.white);
+    html.append("</table>");
+  }
+
+  private void appendPlayerStrengthHumanSlRow(
+      StringBuilder html, String side, HumanSlFeatureExtractor.SideFeatures features) {
+    html.append("<tr><td>")
+        .append(playerStrengthEscapeHtml(side))
+        .append("</td><td>")
+        .append(playerStrengthEscapeHtml(playerStrengthHumanSlProfileText(features.bestProfile)))
+        .append("</td><td>")
+        .append(playerStrengthHumanSlConfidenceText(features))
+        .append("</td><td>")
+        .append(features.sampleCount / Math.max(1, HumanSlFeatureExtractor.DEFAULT_PROFILES.size()))
+        .append("</td><td>")
+        .append(playerStrengthEscapeHtml(playerStrengthHumanSlCurveText(features)))
+        .append("</td></tr>");
+  }
+
+  private String playerStrengthHumanSlConfidenceText(
+      HumanSlFeatureExtractor.SideFeatures features) {
+    if (features == null || features.sampleCount == 0) {
+      return Lizzie.resourceBundle.getString("PlayerStrengthEstimate.confidence.low");
+    }
+    int moveSamples =
+        features.sampleCount / Math.max(1, HumanSlFeatureExtractor.DEFAULT_PROFILES.size());
+    double anomalyRate = features.anomalousSampleCount / (double) Math.max(1, features.sampleCount);
+    if (moveSamples >= 40 && features.bestSecondGap >= 0.35 && anomalyRate <= 0.05) {
+      return Lizzie.resourceBundle.getString("PlayerStrengthEstimate.confidence.high");
+    }
+    if (moveSamples >= 16 && features.bestSecondGap >= 0.12 && anomalyRate <= 0.15) {
+      return Lizzie.resourceBundle.getString("PlayerStrengthEstimate.confidence.medium");
+    }
+    return Lizzie.resourceBundle.getString("PlayerStrengthEstimate.confidence.low");
+  }
+
+  private String playerStrengthHumanSlCurveText(HumanSlFeatureExtractor.SideFeatures features) {
+    if (features == null || features.averageLogProbabilityByProfile.isEmpty()) {
+      return "-";
+    }
+    StringBuilder text = new StringBuilder();
+    int count = 0;
+    for (Map.Entry<String, Double> entry : features.averageLogProbabilityByProfile.entrySet()) {
+      if (count > 0) {
+        text.append(", ");
+      }
+      text.append(playerStrengthHumanSlProfileText(entry.getKey()))
+          .append(" ")
+          .append(String.format(Locale.US, "%.2f", entry.getValue()));
+      count++;
+      if (count >= 4 && features.averageLogProbabilityByProfile.size() > 4) {
+        text.append(", ...");
+        break;
+      }
+    }
+    return text.toString();
+  }
+
+  private String playerStrengthHumanSlProfileText(String profile) {
+    if (profile == null || profile.isEmpty()) {
+      return "-";
+    }
+    if (profile.startsWith("rank_")) {
+      return profile.substring("rank_".length());
+    }
+    return profile;
+  }
+
+  private String playerStrengthEscapeHtml(String value) {
+    if (value == null) {
+      return "";
+    }
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+  }
+
   private String playerStrengthConfidenceText(PlayerStrengthEstimator.Confidence confidence) {
     switch (confidence) {
       case HIGH:
@@ -13070,6 +13264,132 @@ public class LizzieFrame extends JFrame {
         0.35 * matchSignal + 0.30 * firstChoiceSignal + 0.25 * lossSignal + 0.10 * mistakeSignal,
         0.0,
         1.0);
+  }
+
+  private final class PlayerStrengthHumanSlWorker
+      extends SwingWorker<PlayerStrengthHumanSlReport, Void> {
+    private final PlayerStrengthEstimator.Report strengthReport;
+    private final Path modelPath;
+    private final BoardHistoryNode endNode;
+    private final JEditorPane htmlPane;
+
+    private PlayerStrengthHumanSlWorker(
+        PlayerStrengthEstimator.Report strengthReport,
+        Path modelPath,
+        BoardHistoryNode endNode,
+        JEditorPane htmlPane) {
+      this.strengthReport = strengthReport;
+      this.modelPath = modelPath;
+      this.endNode = endNode;
+      this.htmlPane = htmlPane;
+    }
+
+    @Override
+    protected PlayerStrengthHumanSlReport doInBackground() {
+      String command = resolvePlayerStrengthHumanSlAnalysisCommand();
+      if (command.trim().isEmpty()) {
+        return PlayerStrengthHumanSlReport.unavailable(
+            Lizzie.resourceBundle.getString(
+                "PlayerStrengthEstimate.humanSl.status.noAnalysisCommand"));
+      }
+      try (HumanSlAnalysisRunner runner = new HumanSlAnalysisRunner(command, modelPath)) {
+        HumanSlAnalysisRunner.HumanSlBatchResult batchResult =
+            runner.analyzeMainline(
+                endNode,
+                HumanSlFeatureExtractor.DEFAULT_PROFILES,
+                Duration.ofSeconds(30),
+                this::isCancelled);
+        if (!batchResult.isAvailable()) {
+          return PlayerStrengthHumanSlReport.unavailable(
+              MessageFormat.format(
+                  Lizzie.resourceBundle.getString(
+                      "PlayerStrengthEstimate.humanSl.status.unavailable"),
+                  batchResult.getUnavailableReason()));
+        }
+        return PlayerStrengthHumanSlReport.available(HumanSlFeatureExtractor.extract(batchResult));
+      } catch (Exception e) {
+        return PlayerStrengthHumanSlReport.unavailable(
+            MessageFormat.format(
+                Lizzie.resourceBundle.getString("PlayerStrengthEstimate.humanSl.status.failed"),
+                e.getLocalizedMessage()));
+      }
+    }
+
+    @Override
+    protected void done() {
+      if (isCancelled()) {
+        return;
+      }
+      try {
+        PlayerStrengthHumanSlReport humanSlReport = get();
+        htmlPane.setText(buildPlayerStrengthEstimateHtml(strengthReport, humanSlReport));
+        htmlPane.setCaretPosition(0);
+      } catch (Exception e) {
+        PlayerStrengthHumanSlReport humanSlReport =
+            PlayerStrengthHumanSlReport.unavailable(
+                MessageFormat.format(
+                    Lizzie.resourceBundle.getString("PlayerStrengthEstimate.humanSl.status.failed"),
+                    e.getLocalizedMessage()));
+        htmlPane.setText(buildPlayerStrengthEstimateHtml(strengthReport, humanSlReport));
+        htmlPane.setCaretPosition(0);
+      }
+    }
+  }
+
+  private static final class PlayerStrengthHumanSlReport {
+    private final String statusText;
+    private final Path modelPath;
+    private final HumanSlFeatureExtractor.SideFeatures overall;
+    private final HumanSlFeatureExtractor.SideFeatures black;
+    private final HumanSlFeatureExtractor.SideFeatures white;
+
+    private PlayerStrengthHumanSlReport(
+        String statusText,
+        Path modelPath,
+        HumanSlFeatureExtractor.SideFeatures overall,
+        HumanSlFeatureExtractor.SideFeatures black,
+        HumanSlFeatureExtractor.SideFeatures white) {
+      this.statusText = statusText;
+      this.modelPath = modelPath;
+      this.overall = overall;
+      this.black = black;
+      this.white = white;
+    }
+
+    private static PlayerStrengthHumanSlReport unavailable(String statusText) {
+      return new PlayerStrengthHumanSlReport(statusText, null, null, null, null);
+    }
+
+    private static PlayerStrengthHumanSlReport analyzing(Path modelPath) {
+      return new PlayerStrengthHumanSlReport(
+          Lizzie.resourceBundle.getString("PlayerStrengthEstimate.humanSl.status.analyzing"),
+          modelPath,
+          null,
+          null,
+          null);
+    }
+
+    private static PlayerStrengthHumanSlReport available(
+        HumanSlFeatureExtractor.FeatureReport featureReport) {
+      if (featureReport == null || featureReport.overall.sampleCount == 0) {
+        return unavailable(
+            Lizzie.resourceBundle.getString("PlayerStrengthEstimate.humanSl.status.noResults"));
+      }
+      return new PlayerStrengthHumanSlReport(
+          Lizzie.resourceBundle.getString("PlayerStrengthEstimate.humanSl.status.ready"),
+          null,
+          featureReport.overall,
+          featureReport.black,
+          featureReport.white);
+    }
+
+    private boolean shouldAnalyze() {
+      return modelPath != null && overall == null;
+    }
+
+    private boolean hasFeatures() {
+      return overall != null && black != null && white != null;
+    }
   }
 
   private static final class PlayerStrengthMatchChart extends JPanel {

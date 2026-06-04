@@ -62,6 +62,13 @@ REGRESSION_FIRST_CHOICE_DIFFICULTY_WEIGHT = -10.6037172036
 REGRESSION_GOOD_MOVE_DIFFICULTY_WEIGHT = 1.7609995811
 REGRESSION_MATCH_DIFFICULTY_WEIGHT = -2.8472903619
 DEFAULT_KATAGO_RESPONSE_TIMEOUT_SECONDS = 600
+POLICY_FLOOR = 1.0e-12
+GTP_COLUMNS = "ABCDEFGHJKLMNOPQRSTUVWXYZ"
+DEFAULT_HUMANSL_PROFILES = [f"rank_{rank}k" for rank in range(18, 0, -1)] + [
+    f"rank_{rank}d" for rank in range(1, 10)
+]
+LOW_RANK_HUMANSL_PROFILES = [f"rank_{rank}k" for rank in range(18, 12, -1)]
+HIGH_RANK_HUMANSL_PROFILES = ["rank_5d", "rank_7d", "rank_9d"]
 
 EXCELLENT_SCORE_LOSS = 0.2
 GREAT_SCORE_LOSS = 0.6
@@ -122,9 +129,33 @@ class Sample:
     adjusted_weight: float
 
 
+@dataclass
+class HumanSlQuery:
+    move_number: int
+    color: str
+    played: str
+    profile: str
+    position_moves: list[tuple[str, str]]
+
+
+@dataclass
+class HumanSlMoveResult:
+    move_number: int
+    color: str
+    profile: str
+    move: str
+    probability: float | None
+    status: str
+
+
 class KataGoProcess:
     def __init__(
-        self, katago: Path, model: Path, config: Path, response_timeout_seconds: float
+        self,
+        katago: Path,
+        model: Path,
+        config: Path,
+        response_timeout_seconds: float,
+        human_model: Path | None = None,
     ) -> None:
         self._next_id = 0
         self._response_timeout_seconds = max(float(response_timeout_seconds), 30.0)
@@ -138,6 +169,8 @@ class KataGoProcess:
             "-override-config",
             "nnRandomize=false",
         ]
+        if human_model is not None:
+            args.extend(["-human-model", str(human_model)])
         self._process = subprocess.Popen(
             args,
             stdin=subprocess.PIPE,
@@ -257,6 +290,68 @@ class KataGoProcess:
                 progress_callback(min(start + len(chunk), len(positions)), len(positions), None)
         return responses
 
+    def analyze_humansl_many(
+        self,
+        queries: list[HumanSlQuery],
+        *,
+        rules: str,
+        komi: float,
+        size: int,
+        max_visits: int,
+        batch_positions: int,
+        progress_callback: Any | None = None,
+    ) -> list[HumanSlMoveResult]:
+        if not self._process.stdin or not self._process.stdout:
+            raise RuntimeError("KataGo process is not running")
+
+        results: list[HumanSlMoveResult] = []
+        batch_size = max(batch_positions, 1)
+        for start in range(0, len(queries), batch_size):
+            chunk = queries[start : start + batch_size]
+            if progress_callback:
+                progress_callback(start, len(queries), min(start + len(chunk), len(queries)))
+            pending: dict[str, int] = {}
+            chunk_responses: list[dict[str, Any] | None] = [None] * len(chunk)
+            for index, query in enumerate(chunk):
+                request_id = f"humansl-{self._next_id}"
+                self._next_id += 1
+                pending[request_id] = index
+                request = self._human_sl_request(
+                    request_id,
+                    query,
+                    rules=rules,
+                    komi=komi,
+                    size=size,
+                    max_visits=max_visits,
+                )
+                self._process.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
+            self._process.stdin.flush()
+
+            while pending:
+                try:
+                    line = self._stdout_queue.get(timeout=self._response_timeout_seconds)
+                except queue.Empty as exc:
+                    raise KataGoTimeoutError(
+                        "KataGo did not return HumanSL analysis within "
+                        f"{self._response_timeout_seconds:.0f}s; pending ids: "
+                        + ",".join(sorted(pending))
+                    ) from exc
+                if line is None:
+                    raise RuntimeError("KataGo exited before returning HumanSL analysis")
+                line = line.strip()
+                if not line or not line.startswith("{"):
+                    continue
+                response = json.loads(line)
+                response_id = str(response.get("id"))
+                if response_id not in pending:
+                    continue
+                chunk_responses[pending.pop(response_id)] = response
+            for query, response in zip(chunk, chunk_responses):
+                results.append(humansl_result_from_response(query, response, size))
+            if progress_callback:
+                progress_callback(min(start + len(chunk), len(queries)), len(queries), None)
+        return results
+
     def _request(
         self,
         request_id: str,
@@ -279,6 +374,34 @@ class KataGoProcess:
             "includePVVisits": False,
             "includeMovesOwnership": False,
             "overrideSettings": {"reportAnalysisWinratesAs": "SIDETOMOVE"},
+        }
+
+    def _human_sl_request(
+        self,
+        request_id: str,
+        query: HumanSlQuery,
+        *,
+        rules: str,
+        komi: float,
+        size: int,
+        max_visits: int,
+    ) -> dict[str, Any]:
+        return {
+            "id": request_id,
+            "moves": [[color, move] for color, move in query.position_moves],
+            "rules": rules,
+            "komi": komi,
+            "boardXSize": size,
+            "boardYSize": size,
+            "maxVisits": max_visits,
+            "includePolicy": True,
+            "includeOwnership": False,
+            "includePVVisits": False,
+            "includeMovesOwnership": False,
+            "overrideSettings": {
+                "humanSLProfile": query.profile,
+                "reportAnalysisWinratesAs": "SIDETOMOVE",
+            },
         }
 
 
@@ -334,6 +457,33 @@ def main() -> int:
     parser.add_argument("--katago", default=DEFAULT_KATAGO, help="Path to katago.exe.")
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Path to model .bin.gz.")
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="Path to KataGo analysis config.")
+    parser.add_argument(
+        "--human-model",
+        help="Optional KataGo HumanSL model path. When set, JSONL rows include HumanSL features.",
+    )
+    parser.add_argument(
+        "--human-profiles",
+        default=",".join(DEFAULT_HUMANSL_PROFILES),
+        help="Comma-separated HumanSL profiles to query.",
+    )
+    parser.add_argument(
+        "--human-max-moves",
+        type=int,
+        default=0,
+        help="Maximum moves to query for HumanSL. 0 reuses --max-moves.",
+    )
+    parser.add_argument(
+        "--human-max-visits",
+        type=int,
+        default=1,
+        help="KataGo visits per HumanSL policy query.",
+    )
+    parser.add_argument(
+        "--human-batch-positions",
+        type=int,
+        default=64,
+        help="HumanSL position/profile requests to queue before waiting for responses.",
+    )
     parser.add_argument("--jsonl", help="Optional JSONL output path.")
     parser.add_argument(
         "--reuse-sgf-analysis",
@@ -353,6 +503,12 @@ def main() -> int:
     args = parser.parse_args()
     if args.sgf_analysis_only:
         args.reuse_sgf_analysis = True
+    args.human_profiles = split_humansl_profiles(args.human_profiles)
+    if args.human_model and args.sgf_analysis_only:
+        print(
+            "[warn] --human-model is ignored with --sgf-analysis-only because no KataGo process is started.",
+            file=sys.stderr,
+        )
 
     patterns = list(args.sgfs)
     for jsonl_path in args.paths_from_jsonl:
@@ -427,6 +583,7 @@ def evaluate_games_serial(args: argparse.Namespace, games: list[Game], jsonl_fil
         Path(args.model),
         Path(args.config),
         float(args.katago_response_timeout),
+        Path(args.human_model) if args.human_model else None,
     )
     try:
         for index, game in enumerate(games, start=1):
@@ -439,6 +596,10 @@ def evaluate_games_serial(args: argparse.Namespace, games: list[Game], jsonl_fil
                 args.max_moves,
                 args.batch_positions,
                 reuse_sgf_analysis=args.reuse_sgf_analysis,
+                human_profiles=args.human_profiles if args.human_model else [],
+                human_max_visits=args.human_max_visits,
+                human_max_moves=args.human_max_moves or args.max_moves,
+                human_batch_positions=args.human_batch_positions,
             )
             write_results(results, args.player, jsonl_file)
     finally:
@@ -465,6 +626,11 @@ def evaluate_games_parallel_with_progress(
         args.batch_positions,
         args.reuse_sgf_analysis,
         args.katago_response_timeout,
+        args.human_model,
+        args.human_profiles,
+        args.human_max_visits,
+        args.human_max_moves or args.max_moves,
+        args.human_batch_positions,
         progress_queue,
     )
     total = len(games)
@@ -635,11 +801,20 @@ def init_worker(
     batch_positions: int,
     reuse_sgf_analysis: bool,
     katago_response_timeout: float,
+    human_model: str | None,
+    human_profiles: list[str],
+    human_max_visits: int,
+    human_max_moves: int,
+    human_batch_positions: int,
     progress_queue: Any = None,
 ) -> None:
     global _WORKER_KATAGO, _WORKER_SETTINGS, _WORKER_PROGRESS_QUEUE
     _WORKER_KATAGO = KataGoProcess(
-        Path(katago), Path(model), Path(config), katago_response_timeout
+        Path(katago),
+        Path(model),
+        Path(config),
+        katago_response_timeout,
+        Path(human_model) if human_model else None,
     )
     _WORKER_PROGRESS_QUEUE = progress_queue
     _WORKER_SETTINGS = {
@@ -652,6 +827,11 @@ def init_worker(
         "batch_positions": batch_positions,
         "reuse_sgf_analysis": reuse_sgf_analysis,
         "katago_response_timeout": katago_response_timeout,
+        "human_model": human_model,
+        "human_profiles": human_profiles,
+        "human_max_visits": human_max_visits,
+        "human_max_moves": human_max_moves,
+        "human_batch_positions": human_batch_positions,
     }
     atexit.register(close_worker)
 
@@ -672,6 +852,9 @@ def restart_worker_katago() -> None:
         Path(str(_WORKER_SETTINGS["model"])),
         Path(str(_WORKER_SETTINGS["config"])),
         float(_WORKER_SETTINGS["katago_response_timeout"]),
+        Path(str(_WORKER_SETTINGS["human_model"]))
+        if _WORKER_SETTINGS.get("human_model")
+        else None,
     )
 
 
@@ -700,6 +883,10 @@ def worker_evaluate_game(item: tuple[int, Game]) -> list[dict[str, Any]]:
             int(_WORKER_SETTINGS["batch_positions"]),
             progress_index=index,
             reuse_sgf_analysis=bool(_WORKER_SETTINGS.get("reuse_sgf_analysis")),
+            human_profiles=list(_WORKER_SETTINGS.get("human_profiles") or []),
+            human_max_visits=int(_WORKER_SETTINGS.get("human_max_visits") or 1),
+            human_max_moves=int(_WORKER_SETTINGS.get("human_max_moves") or 0),
+            human_batch_positions=int(_WORKER_SETTINGS.get("human_batch_positions") or 64),
         )
     except KataGoTimeoutError as exc:
         print(
@@ -718,6 +905,10 @@ def worker_evaluate_game(item: tuple[int, Game]) -> list[dict[str, Any]]:
             1,
             progress_index=index,
             reuse_sgf_analysis=bool(_WORKER_SETTINGS.get("reuse_sgf_analysis")),
+            human_profiles=list(_WORKER_SETTINGS.get("human_profiles") or []),
+            human_max_visits=int(_WORKER_SETTINGS.get("human_max_visits") or 1),
+            human_max_moves=int(_WORKER_SETTINGS.get("human_max_moves") or 0),
+            human_batch_positions=1,
         )
 
 
@@ -1100,6 +1291,10 @@ def evaluate_game(
     progress_index: int | None = None,
     reuse_sgf_analysis: bool = False,
     sgf_analysis_only: bool = False,
+    human_profiles: list[str] | None = None,
+    human_max_visits: int = 1,
+    human_max_moves: int = 0,
+    human_batch_positions: int = 64,
 ) -> list[dict[str, Any]]:
     moves = game.moves[: min(len(game.moves), max_moves)]
 
@@ -1157,6 +1352,24 @@ def evaluate_game(
         if sample:
             samples[color].append(sample)
 
+    human_features: dict[str, dict[str, Any]] = {"B": {}, "W": {}}
+    if katago is not None and human_profiles:
+        human_move_limit = min(len(moves), human_max_moves or len(moves))
+        human_queries = build_humansl_queries(moves[:human_move_limit], human_profiles)
+        if human_queries:
+            human_results = katago.analyze_humansl_many(
+                human_queries,
+                rules=rules,
+                komi=game.komi,
+                size=game.size,
+                max_visits=human_max_visits,
+                batch_positions=human_batch_positions,
+            )
+            human_features = {
+                "B": humansl_side_features(human_results, human_profiles, "B"),
+                "W": humansl_side_features(human_results, human_profiles, "W"),
+            }
+
     analysis_source = "sgf" if sgf_analysis_only else "katago"
     if saved_positions and katago_positions:
         analysis_source = "mixed"
@@ -1172,6 +1385,7 @@ def evaluate_game(
             analysis_source,
             saved_positions,
             katago_positions,
+            human_features["B"],
         ),
         side_report(
             game,
@@ -1182,8 +1396,207 @@ def evaluate_game(
             analysis_source,
             saved_positions,
             katago_positions,
+            human_features["W"],
         ),
     ]
+
+
+def build_humansl_queries(
+    moves: list[tuple[str, str]], profiles: list[str]
+) -> list[HumanSlQuery]:
+    queries: list[HumanSlQuery] = []
+    for index, (color, played) in enumerate(moves):
+        move_number = index + 1
+        position = moves[:index]
+        for profile in profiles:
+            queries.append(HumanSlQuery(move_number, color, played, profile, position))
+    return queries
+
+
+def humansl_result_from_response(
+    query: HumanSlQuery, response: dict[str, Any] | None, board_size: int
+) -> HumanSlMoveResult:
+    if response is None:
+        return HumanSlMoveResult(
+            query.move_number, query.color, query.profile, query.played, None, "query_failed"
+        )
+    policy = extract_human_policy(response)
+    if policy is None:
+        return HumanSlMoveResult(
+            query.move_number,
+            query.color,
+            query.profile,
+            query.played,
+            None,
+            "missing_human_policy",
+        )
+    probability = extract_move_probability(policy, query.played, board_size)
+    if probability is None:
+        return HumanSlMoveResult(
+            query.move_number,
+            query.color,
+            query.profile,
+            query.played,
+            None,
+            "illegal_or_missing_move",
+        )
+    return HumanSlMoveResult(
+        query.move_number, query.color, query.profile, query.played, probability, "ok"
+    )
+
+
+def extract_human_policy(response: dict[str, Any]) -> Any:
+    if "humanPolicy" in response:
+        return response["humanPolicy"]
+    root_info = response.get("rootInfo")
+    if isinstance(root_info, dict) and "humanPolicy" in root_info:
+        return root_info["humanPolicy"]
+    return None
+
+
+def extract_move_probability(policy: Any, move: str, board_size: int) -> float | None:
+    if policy is None:
+        return None
+    normalized_move = str(move or "").strip().upper()
+    if isinstance(policy, dict):
+        value = policy.get(normalized_move)
+        if value is None:
+            value = policy.get(normalized_move.lower())
+        return coerce_probability(value)
+    if isinstance(policy, list) and policy and all(isinstance(item, (int, float)) for item in policy):
+        index = gtp_policy_index(normalized_move, board_size)
+        if index is None or index >= len(policy):
+            return None
+        return coerce_probability(policy[index])
+    if isinstance(policy, list):
+        for item in policy:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            if str(item[0]).strip().upper() == normalized_move:
+                return coerce_probability(item[1])
+    return None
+
+
+def coerce_probability(value: Any) -> float | None:
+    try:
+        probability = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(probability) or probability < 0.0:
+        return None
+    return max(probability, POLICY_FLOOR)
+
+
+def gtp_policy_index(move: str, board_size: int) -> int | None:
+    if move == "PASS":
+        return board_size * board_size
+    if len(move) < 2:
+        return None
+    column = GTP_COLUMNS.find(move[0])
+    if column < 0 or column >= board_size:
+        return None
+    try:
+        row = int(move[1:])
+    except ValueError:
+        return None
+    if row < 1 or row > board_size:
+        return None
+    return (row - 1) * board_size + column
+
+
+def humansl_side_features(
+    results: list[HumanSlMoveResult], profiles: list[str], color: str
+) -> dict[str, Any]:
+    side_results = [result for result in results if result.color == color]
+    if not side_results:
+        return {}
+    max_move_number = max((result.move_number for result in results), default=0)
+    averages = humansl_average_logp(side_results, profiles)
+    stage_averages: dict[str, dict[str, float]] = {}
+    stage_best: dict[str, str | None] = {}
+    for stage in ("opening", "middle", "endgame"):
+        stage_rows = [
+            result
+            for result in side_results
+            if humansl_stage(result.move_number, max_move_number) == stage
+        ]
+        stage_averages[stage] = humansl_average_logp(stage_rows, profiles)
+        stage_best[stage] = humansl_best_profile(stage_averages[stage])
+    features: dict[str, Any] = {
+        "human_sl_profiles": profiles,
+        "human_sl_sample_count": len(side_results),
+        "human_sl_move_count": len({result.move_number for result in side_results}),
+        "human_sl_anomalous_sample_count": sum(
+            1 for result in side_results if result.status != "ok" or result.probability is None
+        ),
+        "human_sl_average_log_probability_by_profile": averages,
+        "human_sl_best_profile": humansl_best_profile(averages),
+        "human_sl_best_second_gap": round(humansl_best_second_gap(averages), 6),
+        "human_sl_high_low_trend": round(humansl_high_low_trend(averages), 6),
+        "human_sl_stage_best_profile_by_stage": stage_best,
+        "human_sl_stage_average_log_probability_by_profile": stage_averages,
+    }
+    for profile, value in averages.items():
+        features[f"human_sl_avg_logp_{profile}"] = round(value, 6)
+    for stage, stage_values in stage_averages.items():
+        features[f"human_sl_{stage}_best_profile"] = stage_best[stage]
+        for profile, value in stage_values.items():
+            features[f"human_sl_{stage}_avg_logp_{profile}"] = round(value, 6)
+    return features
+
+
+def humansl_average_logp(
+    results: list[HumanSlMoveResult], profiles: list[str]
+) -> dict[str, float]:
+    averages: dict[str, float] = {}
+    for profile in profiles:
+        values = [
+            math.log(result.probability if result.probability is not None else POLICY_FLOOR)
+            for result in results
+            if result.profile == profile
+        ]
+        if values:
+            averages[profile] = statistics.fmean(values)
+    return averages
+
+
+def humansl_best_profile(averages: dict[str, float]) -> str | None:
+    if not averages:
+        return None
+    return max(averages.items(), key=lambda item: item[1])[0]
+
+
+def humansl_best_second_gap(averages: dict[str, float]) -> float:
+    values = sorted(averages.values(), reverse=True)
+    if len(values) < 2:
+        return 0.0
+    return values[0] - values[1]
+
+
+def humansl_high_low_trend(averages: dict[str, float]) -> float:
+    high_values = [averages[profile] for profile in HIGH_RANK_HUMANSL_PROFILES if profile in averages]
+    low_values = [averages[profile] for profile in LOW_RANK_HUMANSL_PROFILES if profile in averages]
+    if not high_values or not low_values:
+        return 0.0
+    return statistics.fmean(high_values) - statistics.fmean(low_values)
+
+
+def humansl_stage(move_number: int, max_move_number: int) -> str:
+    if max_move_number <= 1:
+        return "opening"
+    ratio = move_number / max_move_number
+    if ratio <= 1.0 / 3.0:
+        return "opening"
+    if ratio <= 2.0 / 3.0:
+        return "middle"
+    return "endgame"
+
+
+def split_humansl_profiles(raw: str | list[str]) -> list[str]:
+    if isinstance(raw, list):
+        return [profile for profile in raw if profile]
+    profiles = [part.strip() for part in str(raw or "").split(",") if part.strip()]
+    return profiles or list(DEFAULT_HUMANSL_PROFILES)
 
 
 def sample_move(
@@ -1292,11 +1705,12 @@ def side_report(
     analysis_source: str = "katago",
     sgf_analysis_positions: int = 0,
     katago_analysis_positions: int = 0,
+    human_sl_features: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     player = game.black_name if color == "B" else game.white_name
     fox_rank = game.black_rank if color == "B" else game.white_rank
     if not samples:
-        return {
+        row = {
             "path": str(game.path),
             "side": color,
             "player": player,
@@ -1309,6 +1723,9 @@ def side_report(
             "katago_analysis_positions": katago_analysis_positions,
             "strength_band": "-",
         }
+        if human_sl_features:
+            row.update(human_sl_features)
+        return row
 
     score_losses = [sample.score_loss for sample in samples if sample.score_loss is not None]
     average_winrate_loss = statistics.fmean(sample.winrate_loss for sample in samples)
@@ -1353,7 +1770,7 @@ def side_report(
         match_rate_value,
         average_difficulty,
     )
-    return {
+    row = {
         "path": str(game.path),
         "side": color,
         "player": player,
@@ -1381,6 +1798,9 @@ def side_report(
         "mistake_rate": round(mistake_rate, 4),
         "blunder_rate": round(blunder_rate, 4),
     }
+    if human_sl_features:
+        row.update(human_sl_features)
+    return row
 
 
 def weighted_loss(samples: list[Sample], fallback: float) -> float:
@@ -1746,8 +2166,15 @@ def cap(value: float, thresholds: list[tuple[float, int]], fallback: int) -> int
 
 
 def format_row(row: dict[str, Any]) -> str:
+    human_text = ""
+    if row.get("human_sl_sample_count"):
+        human_text = (
+            f" humanSL={row.get('human_sl_best_profile') or '-'}"
+            f" gap={number(row.get('human_sl_best_second_gap')):.3f}"
+            f" trend={number(row.get('human_sl_high_low_trend')):.3f}"
+        )
     if not row.get("samples"):
-        return f"  {row['side']} {row['player']} samples=0 band=-"
+        return f"  {row['side']} {row['player']} samples=0 band=-{human_text}"
     return (
         f"  {row['side']} {row['player']} Fox={row.get('fox_rank') or '-'} "
         f"=> {row['strength_band']} score={row['quality_score']:.1f} "
@@ -1759,6 +2186,7 @@ def format_row(row: dict[str, Any]) -> str:
         f"medianLoss={row['median_score_loss']:.2f} "
         f"wrLoss={row['average_winrate_loss']:.1f}% "
         f"mistake={row['mistake_rate']:.0%}"
+        f"{human_text}"
     )
 
 

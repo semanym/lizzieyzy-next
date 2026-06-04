@@ -50,6 +50,105 @@ public class KataGoAutoSetupHelperTest {
   }
 
   @Test
+  void importHumanSlModelCopiesToSeparateDirectoryAndDoesNotChangeActiveWeight() throws Exception {
+    Path tempRoot = Files.createTempDirectory("katago-import-humansl");
+    Path source =
+        Files.write(
+            tempRoot.resolve(KataGoAutoSetupHelper.HUMAN_SL_MODEL_FILE_NAME),
+            new byte[] {1, 2, 3, 4});
+    Path weight = touch(tempRoot.resolve("weights").resolve("default.bin.gz"));
+
+    withUserDirAndConfig(
+        tempRoot,
+        () -> {
+          Lizzie.config.uiConfig.put("katago-preferred-weight-path", weight.toString());
+
+          Path imported = KataGoAutoSetupHelper.importHumanSlModel(source);
+          KataGoAutoSetupHelper.SetupSnapshot snapshot = KataGoAutoSetupHelper.inspectLocalSetup();
+          KataGoAutoSetupHelper.HumanSlModelStatus status =
+              KataGoAutoSetupHelper.inspectHumanSlModel();
+
+          assertTrue(imported.startsWith(tempRoot.resolve("human-sl-models")));
+          assertTrue(Files.isRegularFile(imported));
+          assertEquals(weight, snapshot.activeWeightPath);
+          assertEquals(
+              weight.toString(), Lizzie.config.uiConfig.optString("katago-preferred-weight-path"));
+          assertEquals(
+              imported.toString(), Lizzie.config.uiConfig.optString("katago-human-sl-model-path"));
+          assertTrue(status.isInstalled());
+          assertEquals(imported, status.modelPath);
+        });
+  }
+
+  @Test
+  void inspectHumanSlModelUsesRememberedPathBeforeDirectoryScan() throws Exception {
+    Path tempRoot = Files.createTempDirectory("katago-humansl-status");
+    Path first = touch(tempRoot.resolve("human-sl-models").resolve("first-human.bin.gz"));
+    Path remembered = touch(tempRoot.resolve("external").resolve("remembered-human.bin.gz"));
+
+    withUserDirAndConfig(
+        tempRoot,
+        () -> {
+          Lizzie.config.uiConfig.put("katago-human-sl-model-path", remembered.toString());
+
+          KataGoAutoSetupHelper.HumanSlModelStatus status =
+              KataGoAutoSetupHelper.inspectHumanSlModel();
+
+          assertTrue(status.isInstalled());
+          assertEquals(remembered, status.modelPath);
+          assertEquals(remembered, status.candidates.get(0));
+          assertTrue(status.candidates.contains(first));
+        });
+  }
+
+  @Test
+  void inspectHumanSlModelPrefersBundledDefaultFile() throws Exception {
+    Path tempRoot = Files.createTempDirectory("katago-humansl-bundled");
+    Path olderCustom = touch(tempRoot.resolve("human-sl-models").resolve("custom-human.bin.gz"));
+    Path bundled =
+        touch(
+            tempRoot
+                .resolve("human-sl-models")
+                .resolve(KataGoAutoSetupHelper.HUMAN_SL_MODEL_FILE_NAME));
+
+    withUserDirAndConfig(
+        tempRoot,
+        () -> {
+          KataGoAutoSetupHelper.HumanSlModelStatus status =
+              KataGoAutoSetupHelper.inspectHumanSlModel();
+
+          assertTrue(status.isInstalled());
+          assertEquals(bundled, status.modelPath);
+          assertEquals(bundled, status.candidates.get(0));
+          assertTrue(status.candidates.contains(olderCustom));
+        });
+  }
+
+  @Test
+  void inspectHumanSlModelFindsBundledFileFromAppRootWithoutEngine() throws Exception {
+    Path appRoot = Files.createTempDirectory("katago-humansl-app-root");
+    Path workDir = Files.createDirectories(appRoot.resolve("user-data"));
+    Path processDir = Files.createDirectories(workDir.resolve("cwd"));
+    Path bundled =
+        touch(
+            appRoot
+                .resolve("human-sl-models")
+                .resolve(KataGoAutoSetupHelper.HUMAN_SL_MODEL_FILE_NAME));
+
+    withProcessDirAndConfig(
+        processDir,
+        workDir,
+        () -> {
+          KataGoAutoSetupHelper.HumanSlModelStatus status =
+              KataGoAutoSetupHelper.inspectHumanSlModel();
+
+          assertTrue(status.isInstalled());
+          assertEquals(bundled, status.modelPath);
+          assertEquals(bundled, status.candidates.get(0));
+        });
+  }
+
+  @Test
   void inspectLocalSetupUsesConfiguredWorkDirectoryInsteadOfProcessDirectory() throws Exception {
     Path tempRoot = Files.createTempDirectory("katago-configured-workdir");
     Path workDir = Files.createDirectories(tempRoot.resolve("portable").resolve("user-data"));

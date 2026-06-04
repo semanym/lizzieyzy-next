@@ -53,6 +53,23 @@ METRICS = [
     ("quality_score", "当前评分", 1.0),
 ]
 
+HUMANSL_PROFILE_VALUES = {
+    **{f"rank_{rank}k": -float(rank) for rank in range(18, 0, -1)},
+    **{f"rank_{rank}d": float(rank) for rank in range(1, 10)},
+}
+
+HUMANSL_METRICS = [
+    ("human_sl_best_profile_value", "HumanSL最佳段位值", 1.0),
+    ("human_sl_best_second_gap", "HumanSL一二名差距", 1.0),
+    ("human_sl_high_low_trend", "HumanSL高低段趋势", 1.0),
+]
+for profile in evaluator.DEFAULT_HUMANSL_PROFILES:
+    HUMANSL_METRICS.append((f"human_sl_avg_logp_{profile}", f"HumanSL logP {profile}", 1.0))
+for stage in ("opening", "middle", "endgame"):
+    HUMANSL_METRICS.append((f"human_sl_{stage}_best_profile_value", f"HumanSL {stage}最佳段位值", 1.0))
+
+METRICS.extend(HUMANSL_METRICS)
+
 MISMATCH_METRICS = [
     item
     for item in METRICS
@@ -163,12 +180,39 @@ def main() -> int:
         ["feature", "coefficient"],
     )
 
+    humansl_regression_summary_rows, humansl_regression_coefficient_rows = (
+        humansl_linear_calibration(prepared)
+    )
+    write_csv(
+        out_dir / "humansl_linear_calibration_summary.csv",
+        humansl_regression_summary_rows,
+        [
+            "status",
+            "method",
+            "rows",
+            "games",
+            "cv_mean_absolute_error",
+            "cv_exact_group",
+            "cv_within_one_group",
+            "in_sample_mean_absolute_error",
+            "in_sample_exact_group",
+            "in_sample_within_one_group",
+            "note",
+        ],
+    )
+    write_csv(
+        out_dir / "humansl_linear_calibration_coefficients.csv",
+        humansl_regression_coefficient_rows,
+        ["feature", "coefficient"],
+    )
+
     write_markdown(
         out_dir / "analysis.md",
         prepared,
         correlation_rows,
         distribution_rows,
         formula_rows,
+        humansl_regression_summary_rows,
         args,
     )
     print(f"[analysis] wrote {out_dir / 'analysis.md'}")
@@ -282,11 +326,22 @@ def prepare_rows(rows: list[dict[str, Any]], min_samples: int) -> list[dict[str,
                 "group_distance": calibration.group_distance(actual_group, estimated_group),
             }
         )
+        add_humansl_derived_fields(prepared_row)
         for key, _, _ in METRICS:
             if key in prepared_row:
                 prepared_row[key] = number(prepared_row[key])
         prepared.append(prepared_row)
     return prepared
+
+
+def add_humansl_derived_fields(row: dict[str, Any]) -> None:
+    best_profile = str(row.get("human_sl_best_profile") or "")
+    if best_profile:
+        row["human_sl_best_profile_value"] = HUMANSL_PROFILE_VALUES.get(best_profile, 0.0)
+    for stage in ("opening", "middle", "endgame"):
+        profile = str(row.get(f"human_sl_{stage}_best_profile") or "")
+        if profile:
+            row[f"human_sl_{stage}_best_profile_value"] = HUMANSL_PROFILE_VALUES.get(profile, 0.0)
 
 
 def mark_outliers(rows: list[dict[str, Any]], outlier_z: float) -> None:
@@ -541,6 +596,91 @@ def clean_set_regression(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any
     return [summary], coefficients
 
 
+def humansl_linear_calibration(
+    rows: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    clean_rows = [
+        row
+        for row in rows
+        if not row["statistical_outlier"]
+        and not row["rank_mismatch_candidate"]
+        and has_humansl_features(row)
+    ]
+    if len(clean_rows) < 40:
+        return (
+            [
+                {
+                    "status": "skipped",
+                    "method": "LinearRegression",
+                    "rows": len(clean_rows),
+                    "games": len({row["sgf"] for row in clean_rows}),
+                    "note": "包含 HumanSL 特征的清洗集样本不足，跳过线性校准候选。",
+                }
+            ],
+            [],
+        )
+    try:
+        import numpy as np
+        from sklearn.linear_model import LinearRegression
+    except ImportError as exc:
+        return (
+            [
+                {
+                    "status": "skipped",
+                    "method": "LinearRegression",
+                    "rows": len(clean_rows),
+                    "games": len({row["sgf"] for row in clean_rows}),
+                    "note": f"缺少可选依赖，未运行 HumanSL 线性校准：{exc}",
+                }
+            ],
+            [],
+        )
+
+    feature_names = regression_feature_names() + humansl_regression_feature_names()
+    x = np.array(
+        [regression_features(row) + humansl_regression_features(row) for row in clean_rows],
+        dtype=float,
+    )
+    y = np.array([float(row["actual_rank_value"]) for row in clean_rows], dtype=float)
+    groups = np.array([str(row["sgf"]) for row in clean_rows])
+    weights = regression_balanced_weights(clean_rows)
+    model = LinearRegression()
+    model.fit(x, y, sample_weight=weights)
+    in_sample_predictions = model.predict(x)
+    cv_predictions = grouped_regression_predictions(model, x, y, groups, weights)
+    summary = {
+        "status": "ok",
+        "method": "LinearRegression(KataGo + HumanSL), 只输出候选参数，不引入 LightGBM/CatBoost",
+        "rows": len(clean_rows),
+        "games": len({row["sgf"] for row in clean_rows}),
+        "cv_mean_absolute_error": round(mean_absolute_rank_error(clean_rows, cv_predictions), 3),
+        "cv_exact_group": ratio_text(exact_group_count(clean_rows, cv_predictions), clean_rows),
+        "cv_within_one_group": ratio_text(within_one_group_count(clean_rows, cv_predictions), clean_rows),
+        "in_sample_mean_absolute_error": round(
+            mean_absolute_rank_error(clean_rows, in_sample_predictions), 3
+        ),
+        "in_sample_exact_group": ratio_text(
+            exact_group_count(clean_rows, in_sample_predictions), clean_rows
+        ),
+        "in_sample_within_one_group": ratio_text(
+            within_one_group_count(clean_rows, in_sample_predictions), clean_rows
+        ),
+        "note": "HumanSL 特征为实验校准输入；报告用于判断价值，不改变运行时默认公式。",
+    }
+    coefficients = [{"feature": "intercept", "coefficient": round(float(model.intercept_), 10)}]
+    coefficients.extend(
+        {"feature": name, "coefficient": round(float(coef), 10)}
+        for name, coef in zip(feature_names, model.coef_)
+    )
+    return [summary], coefficients
+
+
+def has_humansl_features(row: dict[str, Any]) -> bool:
+    return int_number(row.get("human_sl_sample_count")) > 0 and all(
+        key in row for key in humansl_regression_feature_names()
+    )
+
+
 def regression_feature_names() -> list[str]:
     return [
         "first_choice_rate",
@@ -594,6 +734,24 @@ def regression_features(row: dict[str, Any]) -> list[float]:
         good_move * difficulty,
         match * difficulty,
     ]
+
+
+def humansl_regression_feature_names() -> list[str]:
+    names = [
+        "human_sl_best_profile_value",
+        "human_sl_best_second_gap",
+        "human_sl_high_low_trend",
+    ]
+    names.extend(f"human_sl_avg_logp_{profile}" for profile in evaluator.DEFAULT_HUMANSL_PROFILES)
+    names.extend(
+        f"human_sl_{stage}_best_profile_value"
+        for stage in ("opening", "middle", "endgame")
+    )
+    return names
+
+
+def humansl_regression_features(row: dict[str, Any]) -> list[float]:
+    return [number(row.get(name)) for name in humansl_regression_feature_names()]
 
 
 def regression_balanced_weights(rows: list[dict[str, Any]]) -> list[float]:
@@ -735,7 +893,21 @@ def write_row_csv(rows: list[dict[str, Any]], path: Path) -> None:
         "actual_metric_distance",
         "nearest_metric_distance",
         "rank_mismatch_candidate",
+        "human_sl_sample_count",
+        "human_sl_move_count",
+        "human_sl_anomalous_sample_count",
+        "human_sl_best_profile",
+        "human_sl_best_profile_value",
+        "human_sl_best_second_gap",
+        "human_sl_high_low_trend",
+        "human_sl_opening_best_profile",
+        "human_sl_opening_best_profile_value",
+        "human_sl_middle_best_profile",
+        "human_sl_middle_best_profile_value",
+        "human_sl_endgame_best_profile",
+        "human_sl_endgame_best_profile_value",
     ]
+    fieldnames.extend(f"human_sl_avg_logp_{profile}" for profile in evaluator.DEFAULT_HUMANSL_PROFILES)
     write_csv(path, rows, fieldnames)
 
 
@@ -752,6 +924,7 @@ def write_markdown(
     correlations: list[dict[str, Any]],
     distributions: list[dict[str, Any]],
     formula_rows: list[dict[str, Any]],
+    humansl_regression_rows: list[dict[str, Any]],
     args: argparse.Namespace,
 ) -> None:
     visits = Counter(str(row.get("max_visits") or "") for row in rows)
@@ -816,6 +989,49 @@ def write_markdown(
                 ]
             )
             + " |"
+        )
+
+    humansl_rows = [row for row in rows if int_number(row.get("human_sl_sample_count")) > 0]
+    lines.extend(["", "## HumanSL 实验特征", ""])
+    if not humansl_rows:
+        lines.append("- 本次输入没有 HumanSL 特征；可用 `evaluate_strength_samples.py --human-model` 生成。")
+    else:
+        lines.append(f"- 含 HumanSL 特征的方数：{len(humansl_rows)}/{len(rows)}")
+        lines.append(
+            f"- HumanSL 线性校准状态：{humansl_regression_rows[0].get('status', 'unknown') if humansl_regression_rows else 'unknown'}"
+        )
+        if humansl_regression_rows:
+            summary = humansl_regression_rows[0]
+            lines.append(
+                "- HumanSL 线性校准候选："
+                f"CV MAE={summary.get('cv_mean_absolute_error', '-')}, "
+                f"CV 大组命中={summary.get('cv_exact_group', '-')}, "
+                f"CV 大组误差<=1={summary.get('cv_within_one_group', '-')}"
+            )
+        lines.append("")
+        lines.append("| 指标 | Pearson | Spearman |")
+        lines.append("| --- | ---: | ---: |")
+        for row in correlations:
+            metric = str(row["metric"])
+            if not metric.startswith("HumanSL"):
+                continue
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        metric,
+                        f"{number(row['pearson_with_rank']):.3f}",
+                        f"{number(row['spearman_with_rank']):.3f}",
+                    ]
+                )
+                + " |"
+            )
+        lines.extend(
+            [
+                "",
+                "- HumanSL 报告只输出 log probability、最佳 profile、趋势和线性候选参数。",
+                "- 不引入 LightGBM/CatBoost，也不改变当前产品默认棋力公式。",
+            ]
         )
 
     lines.extend(["", "## 各大段位组中位数", ""])

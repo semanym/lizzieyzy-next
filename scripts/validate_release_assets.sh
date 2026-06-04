@@ -4,6 +4,9 @@ set -euo pipefail
 PLATFORM="${1:-}"
 RELEASE_DIR="${2:-dist/release}"
 DATE_TAG="${3:-}"
+HUMAN_SL_MODEL_FILE_NAME="b18c384nbt-humanv0.bin.gz"
+HUMAN_SL_MODEL_SHA256="637746e44f0efe00ad1245a50aa9bbf0716efe364c43965ead97bd6835d84ab5"
+HUMAN_SL_MODEL_BYTES="99066230"
 
 if [[ -z "$PLATFORM" || -z "$DATE_TAG" ]]; then
   echo "Usage: $0 <windows|mac-arm64|mac-amd64|linux> [release_dir] <date_tag>"
@@ -14,6 +17,65 @@ if [[ ! -d "$RELEASE_DIR" ]]; then
   echo "Release directory not found: $RELEASE_DIR"
   exit 1
 fi
+
+assert_not_standalone_humansl_asset() {
+  local path="$1"
+  local name
+  local lower_name
+  name="$(basename "$path")"
+  lower_name="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$lower_name" == *"$HUMAN_SL_MODEL_FILE_NAME"* || "$lower_name" == *"human-sl-models"* ]]; then
+    echo "HumanSL model must be bundled inside app packages, not published as a standalone asset: $name"
+    exit 1
+  fi
+}
+
+verify_humansl_model_file() {
+  local model_path="$1"
+  local actual_bytes
+  local actual_sha
+
+  actual_bytes="$(wc -c <"$model_path" | tr -d '[:space:]')"
+  if [[ "$actual_bytes" != "$HUMAN_SL_MODEL_BYTES" ]]; then
+    echo "Unexpected HumanSL model size in release asset"
+    echo "Expected: $HUMAN_SL_MODEL_BYTES bytes"
+    echo "Actual:   $actual_bytes bytes"
+    exit 1
+  fi
+  actual_sha="$(shasum -a 256 "$model_path" | awk '{print $1}')"
+  if [[ "$actual_sha" != "$HUMAN_SL_MODEL_SHA256" ]]; then
+    echo "Unexpected HumanSL model SHA256 in release asset"
+    echo "Expected: $HUMAN_SL_MODEL_SHA256"
+    echo "Actual:   $actual_sha"
+    exit 1
+  fi
+}
+
+assert_humansl_model_in_zip() {
+  local path="$1"
+  local name
+  local entry
+  local tmp_model
+
+  name="$(basename "$path")"
+  if [[ "$name" != *.zip ]]; then
+    return 0
+  fi
+  if ! command -v unzip >/dev/null 2>&1; then
+    echo "unzip command not found; cannot verify bundled HumanSL model in $name"
+    exit 1
+  fi
+
+  entry="$(unzip -Z1 "$path" | grep -E '(^|/)human-sl-models/b18c384nbt-humanv0\.bin\.gz$' | head -n 1 || true)"
+  if [[ -z "$entry" ]]; then
+    echo "Missing bundled HumanSL model in release zip: $name"
+    exit 1
+  fi
+  tmp_model="$(mktemp)"
+  unzip -p "$path" "$entry" >"$tmp_model"
+  verify_humansl_model_file "$tmp_model"
+  rm -f "$tmp_model"
+}
 
 expected=()
 case "$PLATFORM" in
@@ -85,6 +147,8 @@ if [[ "${#actual[@]}" -eq 0 ]]; then
 fi
 
 for name in "${actual[@]}"; do
+  assert_not_standalone_humansl_asset "$RELEASE_DIR/$name"
+  assert_humansl_model_in_zip "$RELEASE_DIR/$name"
   case "$name" in
     *.txt|*.sha256|*.sha256.txt|*.md)
       if [[ "$PLATFORM" != "windows" ]] || [[ "$name" != "${DATE_TAG}-windows64.nvidia.tensorrt.portable.README.txt" && "$name" != "${DATE_TAG}-windows64.nvidia.tensorrt.portable.sha256.txt" ]]; then

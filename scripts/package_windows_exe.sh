@@ -53,6 +53,10 @@ WINDOWS_UPGRADE_UUID_NVIDIA="${WINDOWS_UPGRADE_UUID_NVIDIA:-14a4599e-6d5b-4b86-9
 WINDOWS_UPGRADE_UUID_NVIDIA50_CUDA="${WINDOWS_UPGRADE_UUID_NVIDIA50_CUDA:-8339893c-59d8-4bb0-9cde-e54d6bb969f5}"
 WINDOWS_UPGRADE_UUID_OPENCL="${WINDOWS_UPGRADE_UUID_OPENCL:-0ec8b17f-06b0-4f6a-9246-cf61953743cf}"
 ENGINE_BACKEND_MARKER_NAME="lizzieyzy-next-engine-backend.txt"
+HUMAN_SL_MODEL_FILE_NAME="b18c384nbt-humanv0.bin.gz"
+HUMAN_SL_MODEL_SHA256="637746e44f0efe00ad1245a50aa9bbf0716efe364c43965ead97bd6835d84ab5"
+HUMAN_SL_MODEL_BYTES="99066230"
+HUMAN_SL_MODEL_SOURCE="$ROOT_DIR/human-sl-models/$HUMAN_SL_MODEL_FILE_NAME"
 NVIDIA_RUNTIME_PREPARE_SCRIPT="$ROOT_DIR/scripts/prepare_bundled_nvidia_runtime.py"
 NVIDIA_RUNTIME_STAGE_DIR="$DIST_DIR/nvidia-runtime/cuda12.1-cudnn8"
 NVIDIA50_CUDA_RUNTIME_STAGE_DIR="$DIST_DIR/nvidia-runtime/cuda12.8-cudnn9"
@@ -421,6 +425,40 @@ copy_bundle_engine_assets() {
   cp "$ROOT_DIR/weights/default.bin.gz" "$input_dir/weights/default.bin.gz"
 }
 
+verify_humansl_model_file() {
+  local model_path="$1"
+  local actual_bytes
+  local actual_sha
+
+  if [[ ! -f "$model_path" ]]; then
+    echo "Missing bundled HumanSL model: $model_path"
+    exit 1
+  fi
+  actual_bytes="$(wc -c <"$model_path" | tr -d '[:space:]')"
+  if [[ "$actual_bytes" != "$HUMAN_SL_MODEL_BYTES" ]]; then
+    echo "Unexpected HumanSL model size: $model_path"
+    echo "Expected: $HUMAN_SL_MODEL_BYTES bytes"
+    echo "Actual:   $actual_bytes bytes"
+    exit 1
+  fi
+  actual_sha="$(shasum -a 256 "$model_path" | awk '{print $1}')"
+  if [[ "$actual_sha" != "$HUMAN_SL_MODEL_SHA256" ]]; then
+    echo "Unexpected HumanSL model SHA256: $model_path"
+    echo "Expected: $HUMAN_SL_MODEL_SHA256"
+    echo "Actual:   $actual_sha"
+    exit 1
+  fi
+}
+
+copy_humansl_model() {
+  local input_dir="$1"
+
+  verify_humansl_model_file "$HUMAN_SL_MODEL_SOURCE"
+  mkdir -p "$input_dir/human-sl-models"
+  cp "$HUMAN_SL_MODEL_SOURCE" "$input_dir/human-sl-models/$HUMAN_SL_MODEL_FILE_NAME"
+  verify_humansl_model_file "$input_dir/human-sl-models/$HUMAN_SL_MODEL_FILE_NAME"
+}
+
 prepare_bundled_nvidia_runtime_assets() {
   local runtime_profile="$1"
   local runtime_stage_dir="$2"
@@ -586,6 +624,7 @@ build_app_image() {
 
   rm -rf "$input_dir" "$app_image_dir"
   copy_common_inputs "$input_dir"
+  copy_humansl_model "$input_dir"
   if [[ "$include_katago" == "true" ]]; then
     copy_bundle_engine_assets "$input_dir" "$engine_source_dir" "$engine_target_dir" "$engine_backend"
     if [[ "$engine_backend" == nvidia* ]]; then
@@ -632,6 +671,7 @@ build_installer() {
 
   rm -rf "$installer_dir"
   copy_common_inputs "$input_dir"
+  copy_humansl_model "$input_dir"
   if [[ "$include_katago" == "true" ]]; then
     copy_bundle_engine_assets "$input_dir" "$engine_source_dir" "$engine_target_dir" "$engine_backend"
     if [[ "$engine_backend" == nvidia* ]]; then

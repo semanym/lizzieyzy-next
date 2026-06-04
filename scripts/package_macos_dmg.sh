@@ -9,6 +9,10 @@ DATE_TAG="${1:-$(date +%F)}"
 APP_VERSION="${2:-1.0.0}"
 JAR_PATH="${3:-target/lizzie-yzy2.5.3-shaded.jar}"
 APP_DISPLAY_VERSION="${LIZZIE_NEXT_VERSION:-${4:-next-dev}}"
+HUMAN_SL_MODEL_FILE_NAME="b18c384nbt-humanv0.bin.gz"
+HUMAN_SL_MODEL_SHA256="637746e44f0efe00ad1245a50aa9bbf0716efe364c43965ead97bd6835d84ab5"
+HUMAN_SL_MODEL_BYTES="99066230"
+HUMAN_SL_MODEL_SOURCE="$ROOT_DIR/human-sl-models/$HUMAN_SL_MODEL_FILE_NAME"
 
 JAVA_HOME_DEFAULT="$ROOT_DIR/.tools/jdk-21/jdk-21.0.10.jdk/Contents/Home"
 if [[ -d "$JAVA_HOME_DEFAULT" ]]; then
@@ -68,6 +72,40 @@ copy_bundle_engine_assets() {
   cp "$ROOT_DIR/weights/default.bin.gz" "$INPUT_DIR/weights/default.bin.gz"
 }
 
+verify_humansl_model_file() {
+  local model_path="$1"
+  local actual_bytes
+  local actual_sha
+
+  if [[ ! -f "$model_path" ]]; then
+    echo "Missing bundled HumanSL model: $model_path"
+    exit 1
+  fi
+  actual_bytes="$(wc -c <"$model_path" | tr -d '[:space:]')"
+  if [[ "$actual_bytes" != "$HUMAN_SL_MODEL_BYTES" ]]; then
+    echo "Unexpected HumanSL model size: $model_path"
+    echo "Expected: $HUMAN_SL_MODEL_BYTES bytes"
+    echo "Actual:   $actual_bytes bytes"
+    exit 1
+  fi
+  actual_sha="$(shasum -a 256 "$model_path" | awk '{print $1}')"
+  if [[ "$actual_sha" != "$HUMAN_SL_MODEL_SHA256" ]]; then
+    echo "Unexpected HumanSL model SHA256: $model_path"
+    echo "Expected: $HUMAN_SL_MODEL_SHA256"
+    echo "Actual:   $actual_sha"
+    exit 1
+  fi
+}
+
+copy_humansl_model() {
+  local input_dir="$1"
+
+  verify_humansl_model_file "$HUMAN_SL_MODEL_SOURCE"
+  mkdir -p "$input_dir/human-sl-models"
+  cp "$HUMAN_SL_MODEL_SOURCE" "$input_dir/human-sl-models/$HUMAN_SL_MODEL_FILE_NAME"
+  verify_humansl_model_file "$input_dir/human-sl-models/$HUMAN_SL_MODEL_FILE_NAME"
+}
+
 DIST_DIR="$ROOT_DIR/dist/macos"
 INPUT_DIR="$DIST_DIR/input"
 APP_IMAGE_DIR="$DIST_DIR/app-image"
@@ -83,6 +121,7 @@ if [[ -d "$ROOT_DIR/src/main/resources/assets/readboard_java" ]]; then
   mkdir -p "$INPUT_DIR/readboard_java"
   cp -R "$ROOT_DIR/src/main/resources/assets/readboard_java/." "$INPUT_DIR/readboard_java/"
 fi
+copy_humansl_model "$INPUT_DIR"
 copy_bundle_engine_assets
 
 APP_NAME="LizzieYzy Next"
