@@ -81,6 +81,11 @@ $AutoFetchOpenSgfs = Get-EnvOrDefault "AUTO_FETCH_OPEN_SGFS" "1"
 $RefreshSgfs = Get-EnvOrDefault "REFRESH_SGFS" "1"
 $OgsUrl = Normalize-ExternalValue (Get-EnvOrDefault "OGS_URL" $DefaultOgsUrl)
 $OgsMinDate = Normalize-ExternalValue (Get-EnvOrDefault "OGS_MIN_DATE" "2025-01-01")
+$OgsHttpRetries = [int](Get-EnvOrDefault "OGS_HTTP_RETRIES" "6")
+$OgsRetryDelay = [int](Get-EnvOrDefault "OGS_RETRY_DELAY" "120")
+$OgsApiFallback = Get-EnvOrDefault "OGS_API_FALLBACK" "1"
+$OgsApiSleep = Get-EnvOrDefault "OGS_API_SLEEP" "0.5"
+$OgsApiMaxRequests = Get-EnvOrDefault "OGS_API_MAX_REQUESTS" "250000"
 $AllowPartialSgfs = Get-EnvOrDefault "ALLOW_PARTIAL_SGFS" "0"
 $Out = Normalize-ExternalValue (Get-EnvOrDefault "OUT" (Join-Path $RepoRoot "target\humansl-gpu-run"))
 $MachineId = Get-EnvOrDefault "MACHINE_ID" "windows-opencl-gpu"
@@ -129,6 +134,11 @@ Write-Log "human_model=$HumanModel"
 Write-Log "sgf_by_rank_root=$SgfByRankRoot"
 Write-Log "ogs_url=$OgsUrl"
 Write-Log "ogs_min_date=$OgsMinDate"
+Write-Log "ogs_http_retries=$OgsHttpRetries"
+Write-Log "ogs_retry_delay=$OgsRetryDelay"
+Write-Log "ogs_api_fallback=$OgsApiFallback"
+Write-Log "ogs_api_sleep=$OgsApiSleep"
+Write-Log "ogs_api_max_requests=$OgsApiMaxRequests"
 Write-Log "out=$Out"
 Write-Log "settings per_rank=$PerRank max_visits=$MaxVisits parallel_engines=$ParallelEngines max_moves=$MaxMoves min_moves=$MinMoves"
 
@@ -146,8 +156,13 @@ if (-not (Test-Path -LiteralPath $SgfByRankRoot -PathType Container)) {
             "--min-moves", "$MinMoves",
             "--ogs-url", $OgsUrl,
             "--ogs-min-date", $OgsMinDate,
+            "--http-retries", "$OgsHttpRetries",
+            "--retry-delay", "$OgsRetryDelay",
+            "--ogs-api-sleep", "$OgsApiSleep",
+            "--ogs-api-max-requests", "$OgsApiMaxRequests",
             "--ranks", $LabelRanks
         )
+        if ($OgsApiFallback -ne "1") { $Args += "--no-ogs-api-fallback" }
         if ($AllowPartialSgfs -eq "1") { $Args += "--allow-partial" }
         Invoke-Logged "fetch open SGF samples" "python" $Args
     } else {

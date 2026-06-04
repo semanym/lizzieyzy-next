@@ -27,6 +27,8 @@ import re
 import shutil
 import sys
 import tarfile
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -34,6 +36,7 @@ from pathlib import Path
 OGS_2025_SGF_URL = "https://za3k.com/ogs/ogs_games_2013_to_2025-05/sgfs-by-date.tar.gz"
 JGDB_URL = "https://data.pjreddie.com/files/jgdb.tar.gz"
 DEFAULT_OGS_MIN_DATE = "2025-01-01"
+OGS_GAME_SGF_URL = "https://online-go.com/api/v1/games/{game_id}/sgf"
 DEFAULT_RANKS = [f"{rank}k" for rank in range(18, 0, -1)] + [
     f"{rank}d" for rank in range(1, 13)
 ]
@@ -67,6 +70,20 @@ def parse_args() -> argparse.Namespace:
         help="Only keep OGS games on or after this date. Use empty string to disable.",
     )
     parser.add_argument("--jgdb-url", default=JGDB_URL, help="JGDB tar.gz URL.")
+    parser.add_argument("--http-retries", type=int, default=6, help="HTTP open retry attempts.")
+    parser.add_argument("--retry-delay", type=int, default=120, help="Seconds between HTTP retries.")
+    parser.add_argument("--timeout", type=int, default=120, help="HTTP open timeout in seconds.")
+    parser.add_argument(
+        "--ogs-api-fallback",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="If the OGS dump is unavailable, sample public OGS SGFs through the game API.",
+    )
+    parser.add_argument("--ogs-api-start", type=int, default=80000000, help="First OGS game id to try.")
+    parser.add_argument("--ogs-api-min", type=int, default=70000000, help="Lowest OGS game id to try.")
+    parser.add_argument("--ogs-api-step", type=int, default=1, help="Game id decrement step.")
+    parser.add_argument("--ogs-api-sleep", type=float, default=0.5, help="Seconds between OGS API requests.")
+    parser.add_argument("--ogs-api-max-requests", type=int, default=250000, help="Maximum OGS API SGF requests.")
     parser.add_argument("--skip-ogs", action="store_true", help="Do not fetch OGS samples.")
     parser.add_argument("--skip-jgdb", action="store_true", help="Do not fetch JGDB samples.")
     parser.add_argument(
@@ -90,15 +107,25 @@ def main() -> int:
 
     if not args.skip_ogs:
         ordinary_needed = {rank: needed[rank] for rank in ranks if rank in ORDINARY_RANKS}
-        stream_source(
-            "OGS",
-            args.ogs_url,
-            out,
-            ordinary_needed,
-            counts,
-            args,
-            min_date=args.ogs_min_date,
-        )
+        try:
+            stream_source(
+                "OGS",
+                args.ogs_url,
+                out,
+                ordinary_needed,
+                counts,
+                args,
+                min_date=args.ogs_min_date,
+            )
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+            if not args.ogs_api_fallback:
+                raise
+            print(
+                f"[fetch] OGS dump unavailable ({exc}); falling back to OGS game API",
+                file=sys.stderr,
+                flush=True,
+            )
+            sample_ogs_api(out, ordinary_needed, counts, args)
     if not args.skip_jgdb:
         pro_needed = {rank: needed[rank] for rank in ranks if rank in PRO_RANKS}
         stream_source(
@@ -137,13 +164,7 @@ def stream_source(
     print(f"[fetch] streaming {name}: {url}", flush=True)
     minimum = parse_date_key(min_date) if min_date else None
     last_skip_period = ""
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "lizzieyzy-next HumanSL calibration sampler",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=120) as response:
+    with open_url_with_retries(url, args.http_retries, args.retry_delay, args.timeout) as response:
         with tarfile.open(fileobj=response, mode="r|gz") as archive:
             for member in archive:
                 if all(counts[rank] >= needed[rank] for rank in needed):
@@ -177,6 +198,113 @@ def stream_source(
                 counts[rank] += 1
                 write_ranked_sgf(out, rank, counts[rank], member.name, text)
                 print(f"[fetch] {name}: {rank} {counts[rank]}/{needed[rank]} {member.name}", flush=True)
+
+
+def open_url_with_retries(url: str, retries: int, retry_delay: int, timeout: int):
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "lizzieyzy-next HumanSL calibration sampler",
+        },
+    )
+    attempts = max(1, int(retries))
+    for attempt in range(1, attempts + 1):
+        try:
+            print(f"[fetch] opening {url} attempt {attempt}/{attempts}", flush=True)
+            return urllib.request.urlopen(request, timeout=timeout)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+            status = getattr(exc, "code", None)
+            retryable_status = status in {429, 500, 502, 503, 504}
+            retryable = retryable_status or not isinstance(exc, urllib.error.HTTPError)
+            if attempt >= attempts or not retryable:
+                print(f"[fetch] open failed permanently: {exc}", file=sys.stderr, flush=True)
+                raise
+            print(
+                f"[fetch] open failed: {exc}; retrying in {retry_delay}s",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(max(1, int(retry_delay)))
+    raise RuntimeError("unreachable")
+
+
+def sample_ogs_api(
+    out: Path,
+    needed: dict[str, int],
+    counts: dict[str, int],
+    args: argparse.Namespace,
+) -> None:
+    if not needed:
+        return
+    start = int(args.ogs_api_start)
+    stop = int(args.ogs_api_min)
+    step = max(1, int(args.ogs_api_step))
+    max_requests = max(1, int(args.ogs_api_max_requests))
+    scanned = 0
+    failures = 0
+    game_id = start
+    print(
+        f"[fetch] OGS API fallback scanning game ids {start} down to {stop}, max_requests={max_requests}",
+        flush=True,
+    )
+    while game_id >= stop and scanned < max_requests:
+        if all(counts[rank] >= needed[rank] for rank in needed):
+            print("[fetch] OGS API fallback: quotas satisfied", flush=True)
+            return
+        scanned += 1
+        url = OGS_GAME_SGF_URL.format(game_id=game_id)
+        try:
+            text = fetch_text_url(url, args.timeout)
+        except urllib.error.HTTPError as exc:
+            failures += 1
+            if exc.code == 429:
+                delay = max(float(args.ogs_api_sleep) * 10.0, 30.0)
+                print(f"[fetch] OGS API throttled at game {game_id}; sleeping {delay:.1f}s", flush=True)
+                time.sleep(delay)
+            elif exc.code not in {400, 403, 404}:
+                print(f"[fetch] OGS API game {game_id} failed: {exc}", flush=True)
+            game_id -= step
+            continue
+        except (urllib.error.URLError, TimeoutError) as exc:
+            failures += 1
+            print(f"[fetch] OGS API game {game_id} failed: {exc}", flush=True)
+            time.sleep(max(1.0, float(args.ogs_api_sleep)))
+            game_id -= step
+            continue
+
+        props = root_properties(text)
+        if not meets_min_date(str(game_id), props, args.ogs_min_date):
+            if scanned % 1000 == 0:
+                print(f"[fetch] OGS API scanned {scanned}; reached older games near {game_id}", flush=True)
+            game_id -= step
+            time.sleep(max(0.0, float(args.ogs_api_sleep)))
+            continue
+        if acceptable_game(text, props, args):
+            rank = game_bucket_rank(props)
+            if rank in needed and counts[rank] < needed[rank]:
+                counts[rank] += 1
+                write_ranked_sgf(out, rank, counts[rank], f"ogs-api-{game_id}.sgf", text)
+                print(
+                    f"[fetch] OGS API: {rank} {counts[rank]}/{needed[rank]} game {game_id}",
+                    flush=True,
+                )
+        if scanned % 250 == 0:
+            filled = ", ".join(f"{rank}:{counts[rank]}/{needed[rank]}" for rank in sorted(needed))
+            print(f"[fetch] OGS API progress scanned={scanned} failures={failures} {filled}", flush=True)
+        game_id -= step
+        time.sleep(max(0.0, float(args.ogs_api_sleep)))
+
+
+def fetch_text_url(url: str, timeout: int) -> str:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "lizzieyzy-next HumanSL calibration sampler",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        raw = response.read()
+    return decode_sgf(raw)
 
 
 def decode_sgf(raw: bytes) -> str:
