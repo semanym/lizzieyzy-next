@@ -8,6 +8,11 @@ function Get-EnvOrDefault {
     return $Value
 }
 
+function Normalize-ExternalValue {
+    param([string]$Value)
+    return ("$Value" -replace '^[\s`''"]+', '' -replace '[\s`''"]+$', '')
+}
+
 function Write-Log {
     param([string]$Message)
     $Stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -25,12 +30,22 @@ function Invoke-Logged {
     Write-Log "BEGIN $Title"
     Write-Log "CMD $File $($Arguments -join ' ')"
     $Started = Get-Date
-    & $File @Arguments 2>&1 | ForEach-Object {
-        $Text = "$_"
-        Write-Host $Text
-        Add-Content -Path $script:RunLog -Value $Text -Encoding UTF8
+    $OldErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $File @Arguments 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                $Text = "$($_.Exception.Message)"
+            } else {
+                $Text = "$_"
+            }
+            Write-Host $Text
+            Add-Content -Path $script:RunLog -Value $Text -Encoding UTF8
+        }
+        $ExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+    } finally {
+        $ErrorActionPreference = $OldErrorActionPreference
     }
-    $ExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
     $Elapsed = [int]((Get-Date) - $Started).TotalSeconds
     if ($ExitCode -ne 0) {
         Write-Log "FAIL $Title exit=$ExitCode elapsed=${Elapsed}s"
@@ -56,17 +71,17 @@ function New-Sha256File {
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $RepoRoot
 
-$Katago = Get-EnvOrDefault "KATAGO" "D:\katago\LizzieYzy Next OpenCL\app\engines\katago\windows-x64\katago.exe"
-$Model = Get-EnvOrDefault "MODEL" "D:\katago\LizzieYzy Next OpenCL\app\weights\default.bin.gz"
-$Config = Get-EnvOrDefault "CONFIG" "D:\katago\LizzieYzy Next OpenCL\app\engines\katago\configs\analysis.cfg"
-$HumanModel = Get-EnvOrDefault "HUMAN_MODEL" (Join-Path $RepoRoot "human-sl-models\b18c384nbt-humanv0.bin.gz")
-$SgfByRankRoot = Get-EnvOrDefault "SGF_BY_RANK_ROOT" (Join-Path $RepoRoot "target\humansl-input\sgf-by-rank")
+$Katago = Normalize-ExternalValue (Get-EnvOrDefault "KATAGO" "D:\katago\LizzieYzy Next OpenCL\app\engines\katago\windows-x64\katago.exe")
+$Model = Normalize-ExternalValue (Get-EnvOrDefault "MODEL" "D:\katago\LizzieYzy Next OpenCL\app\weights\default.bin.gz")
+$Config = Normalize-ExternalValue (Get-EnvOrDefault "CONFIG" "D:\katago\LizzieYzy Next OpenCL\app\engines\katago\configs\analysis.cfg")
+$HumanModel = Normalize-ExternalValue (Get-EnvOrDefault "HUMAN_MODEL" (Join-Path $RepoRoot "human-sl-models\b18c384nbt-humanv0.bin.gz"))
+$SgfByRankRoot = Normalize-ExternalValue (Get-EnvOrDefault "SGF_BY_RANK_ROOT" (Join-Path $RepoRoot "target\humansl-input\sgf-by-rank"))
 $AutoFetchOpenSgfs = Get-EnvOrDefault "AUTO_FETCH_OPEN_SGFS" "1"
 $RefreshSgfs = Get-EnvOrDefault "REFRESH_SGFS" "1"
-$OgsUrl = Get-EnvOrDefault "OGS_URL" "https://za3k.com/ogs/ogs_games_2013_to_2025-05/sgfs-by-date.tar.gz"
-$OgsMinDate = Get-EnvOrDefault "OGS_MIN_DATE" "2025-01-01"
+$OgsUrl = Normalize-ExternalValue (Get-EnvOrDefault "OGS_URL" "https://za3k.com/ogs/ogs_games_2013_to_2025-05/sgfs-by-date.tar.gz")
+$OgsMinDate = Normalize-ExternalValue (Get-EnvOrDefault "OGS_MIN_DATE" "2025-01-01")
 $AllowPartialSgfs = Get-EnvOrDefault "ALLOW_PARTIAL_SGFS" "0"
-$Out = Get-EnvOrDefault "OUT" (Join-Path $RepoRoot "target\humansl-gpu-run")
+$Out = Normalize-ExternalValue (Get-EnvOrDefault "OUT" (Join-Path $RepoRoot "target\humansl-gpu-run"))
 $MachineId = Get-EnvOrDefault "MACHINE_ID" "windows-opencl-gpu"
 $Operator = Get-EnvOrDefault "OPERATOR" "semanym"
 $PerRank = [int](Get-EnvOrDefault "PER_RANK" "25")
