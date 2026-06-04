@@ -70,6 +70,7 @@ function New-Sha256File {
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $RepoRoot
+$DefaultOgsUrl = "https://za3k.com/ogs/ogs_games_2013_to_2025-05/sgfs-by-date.tar.gz"
 
 $Katago = Normalize-ExternalValue (Get-EnvOrDefault "KATAGO" "D:\katago\LizzieYzy Next OpenCL\app\engines\katago\windows-x64\katago.exe")
 $Model = Normalize-ExternalValue (Get-EnvOrDefault "MODEL" "D:\katago\LizzieYzy Next OpenCL\app\weights\default.bin.gz")
@@ -78,7 +79,7 @@ $HumanModel = Normalize-ExternalValue (Get-EnvOrDefault "HUMAN_MODEL" (Join-Path
 $SgfByRankRoot = Normalize-ExternalValue (Get-EnvOrDefault "SGF_BY_RANK_ROOT" (Join-Path $RepoRoot "target\humansl-input\sgf-by-rank"))
 $AutoFetchOpenSgfs = Get-EnvOrDefault "AUTO_FETCH_OPEN_SGFS" "1"
 $RefreshSgfs = Get-EnvOrDefault "REFRESH_SGFS" "1"
-$OgsUrl = Normalize-ExternalValue (Get-EnvOrDefault "OGS_URL" "https://za3k.com/ogs/ogs_games_2013_to_2025-05/sgfs-by-date.tar.gz")
+$OgsUrl = Normalize-ExternalValue (Get-EnvOrDefault "OGS_URL" $DefaultOgsUrl)
 $OgsMinDate = Normalize-ExternalValue (Get-EnvOrDefault "OGS_MIN_DATE" "2025-01-01")
 $AllowPartialSgfs = Get-EnvOrDefault "ALLOW_PARTIAL_SGFS" "0"
 $Out = Normalize-ExternalValue (Get-EnvOrDefault "OUT" (Join-Path $RepoRoot "target\humansl-gpu-run"))
@@ -116,6 +117,10 @@ $RunId = Get-Date -Format "yyyyMMdd-HHmmss"
 $SyncDir = Join-Path $RepoRoot "humansl-run-results\$RunId-$MachineId"
 
 "[run] starting HumanSL calibration" | Set-Content -Path $RunLog -Encoding UTF8
+if ($OgsUrl -notmatch "^https?://") {
+    Write-Log "warning: ignoring invalid OGS_URL '$OgsUrl'; using default $DefaultOgsUrl"
+    $OgsUrl = $DefaultOgsUrl
+}
 Write-Log "repo=$RepoRoot"
 Write-Log "katago=$Katago"
 Write-Log "model=$Model"
