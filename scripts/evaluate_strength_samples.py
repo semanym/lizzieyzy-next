@@ -727,13 +727,7 @@ def print_progress(
 ) -> None:
     total_units = sum(position_totals.values())
     active_units = sum(
-        min(
-            max(
-                int(progress.get("done_positions", 0) or 0),
-                int(progress.get("active_positions", 0) or 0),
-            ),
-            position_totals.get(index, 0),
-        )
+        active_progress_units(index, progress, position_totals)
         for index, progress in active_progress.items()
     )
     done_units = min(total_units, completed_units + active_units)
@@ -750,22 +744,48 @@ def print_progress(
     )
 
 
+def active_progress_units(
+    index: int, progress: dict[str, Any], position_totals: dict[int, int]
+) -> int:
+    if str(progress.get("stage") or "") == "humansl":
+        return position_totals.get(index, 0)
+    return min(
+        max(
+            int(progress.get("done_positions", 0) or 0),
+            int(progress.get("active_positions", 0) or 0),
+        ),
+        position_totals.get(index, 0),
+    )
+
+
 def active_progress_text(active_progress: dict[int, dict[str, Any]], limit: int = 6) -> str:
     if not active_progress:
         return ""
     parts = []
     for index in sorted(active_progress)[:limit]:
         progress = active_progress[index]
+        stage = str(progress.get("stage") or "analysis")
         total_moves = max(0, int(progress.get("total_moves", 0) or 0))
         done_positions = max(0, int(progress.get("done_positions", 0) or 0))
         active_positions = int(progress.get("active_positions", 0) or 0)
-        done_moves = min(total_moves, max(0, done_positions - 1))
-        active_moves = min(total_moves, max(0, active_positions - 1))
+        total_positions = max(0, int(progress.get("total_positions", 0) or 0))
         name = Path(str(progress.get("name", ""))).name
-        if active_moves > done_moves:
-            move_text = f"move {done_moves + 1}-{active_moves}/{total_moves}"
+        if stage == "humansl":
+            move_text = f"humansl {done_positions}-{active_positions}/{total_positions} queries"
+        elif stage == "retry":
+            done_moves = min(total_moves, max(0, done_positions - 1))
+            active_moves = min(total_moves, max(0, active_positions - 1))
+            if active_moves > done_moves:
+                move_text = f"retry move {done_moves + 1}-{active_moves}/{total_moves}"
+            else:
+                move_text = f"retry move {done_moves}/{total_moves}"
         else:
-            move_text = f"move {done_moves}/{total_moves}"
+            done_moves = min(total_moves, max(0, done_positions - 1))
+            active_moves = min(total_moves, max(0, active_positions - 1))
+            if active_moves > done_moves:
+                move_text = f"move {done_moves + 1}-{active_moves}/{total_moves}"
+            else:
+                move_text = f"move {done_moves}/{total_moves}"
         parts.append(f"game {index} {move_text} {name}")
     if len(active_progress) > limit:
         parts.append(f"+{len(active_progress) - limit} more")
@@ -871,6 +891,7 @@ def worker_evaluate_game(item: tuple[int, Game]) -> list[dict[str, Any]]:
             {
                 "index": index,
                 "name": str(game.path.name),
+                "stage": "analysis",
                 "done_positions": 0,
                 "total_positions": min(len(game.moves), max_moves) + 1,
                 "total_moves": min(len(game.moves), max_moves),
@@ -899,20 +920,42 @@ def worker_evaluate_game(item: tuple[int, Game]) -> list[dict[str, Any]]:
             flush=True,
         )
         restart_worker_katago()
-        return evaluate_game(
-            _WORKER_KATAGO,
-            game,
-            str(_WORKER_SETTINGS["rules"]),
-            int(_WORKER_SETTINGS["max_visits"]),
-            int(_WORKER_SETTINGS["max_moves"]),
-            1,
-            progress_index=index,
-            reuse_sgf_analysis=bool(_WORKER_SETTINGS.get("reuse_sgf_analysis")),
-            human_profiles=list(_WORKER_SETTINGS.get("human_profiles") or []),
-            human_max_visits=int(_WORKER_SETTINGS.get("human_max_visits") or 1),
-            human_max_moves=int(_WORKER_SETTINGS.get("human_max_moves") or 0),
-            human_batch_positions=1,
-        )
+        if _WORKER_PROGRESS_QUEUE is not None:
+            max_moves = int(_WORKER_SETTINGS["max_moves"])
+            _WORKER_PROGRESS_QUEUE.put(
+                {
+                    "index": index,
+                    "name": str(game.path.name),
+                    "stage": "retry",
+                    "done_positions": 0,
+                    "total_positions": min(len(game.moves), max_moves) + 1,
+                    "total_moves": min(len(game.moves), max_moves),
+                }
+            )
+        try:
+            return evaluate_game(
+                _WORKER_KATAGO,
+                game,
+                str(_WORKER_SETTINGS["rules"]),
+                int(_WORKER_SETTINGS["max_visits"]),
+                int(_WORKER_SETTINGS["max_moves"]),
+                1,
+                progress_index=index,
+                reuse_sgf_analysis=bool(_WORKER_SETTINGS.get("reuse_sgf_analysis")),
+                human_profiles=list(_WORKER_SETTINGS.get("human_profiles") or []),
+                human_max_visits=int(_WORKER_SETTINGS.get("human_max_visits") or 1),
+                human_max_moves=int(_WORKER_SETTINGS.get("human_max_moves") or 0),
+                human_batch_positions=1,
+            )
+        except KataGoTimeoutError as retry_exc:
+            print(
+                f"[error] KataGo timeout again on {game.path.name}: {retry_exc}; "
+                "skipping this game so the batch can continue.",
+                file=sys.stderr,
+                flush=True,
+            )
+            restart_worker_katago()
+            return []
 
 
 def write_results(results: list[dict[str, Any]], player: str | None, jsonl_file: Any) -> None:
@@ -1302,7 +1345,10 @@ def evaluate_game(
     moves = game.moves[: min(len(game.moves), max_moves)]
 
     def report_progress(
-        done_positions: int, total_positions: int, active_positions: int | None = None
+        done_positions: int,
+        total_positions: int,
+        active_positions: int | None = None,
+        stage: str = "analysis",
     ) -> None:
         if _WORKER_PROGRESS_QUEUE is None or progress_index is None:
             return
@@ -1310,6 +1356,7 @@ def evaluate_game(
             {
                 "index": progress_index,
                 "name": str(game.path.name),
+                "stage": stage,
                 "done_positions": done_positions,
                 "active_positions": active_positions,
                 "total_positions": total_positions,
@@ -1360,6 +1407,7 @@ def evaluate_game(
         human_move_limit = min(len(moves), human_max_moves or len(moves))
         human_queries = build_humansl_queries(moves[:human_move_limit], human_profiles)
         if human_queries:
+            report_progress(0, len(human_queries), 0, "humansl")
             human_results = katago.analyze_humansl_many(
                 human_queries,
                 rules=rules,
@@ -1367,6 +1415,9 @@ def evaluate_game(
                 size=game.size,
                 max_visits=human_max_visits,
                 batch_positions=human_batch_positions,
+                progress_callback=lambda done, total, active: report_progress(
+                    done, total, active, "humansl"
+                ),
             )
             human_features = {
                 "B": humansl_side_features(human_results, human_profiles, "B"),

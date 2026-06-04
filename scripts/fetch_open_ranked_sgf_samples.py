@@ -31,6 +31,7 @@ import tarfile
 import time
 import urllib.error
 import urllib.request
+from collections import Counter
 from pathlib import Path
 
 
@@ -291,6 +292,7 @@ def sample_ogs_api(
     progress_interval = max(1, int(args.ogs_api_progress_interval))
     scanned = 0
     failures = 0
+    reject_counts: Counter[str] = Counter()
     game_id = start
     print(
         f"[fetch] OGS API fallback scanning game ids {start} down to {stop}, max_requests={max_requests}",
@@ -305,7 +307,8 @@ def sample_ogs_api(
             accepted = int(getattr(args, "_accepted_new", 0) or 0)
             print(
                 f"[fetch] OGS API heartbeat scanned={scanned}/{max_requests} "
-                f"accepted_new={accepted} failures={failures} next_game={game_id}",
+                f"accepted_new={accepted} failures={failures} next_game={game_id} "
+                f"rejects={format_reject_counts(reject_counts)}",
                 flush=True,
             )
         url = OGS_GAME_SGF_URL.format(game_id=game_id)
@@ -339,33 +342,44 @@ def sample_ogs_api(
 
         props = root_properties(text)
         if not meets_min_date(str(game_id), props, args.ogs_min_date):
+            reject_counts["date"] += 1
             if scanned % 1000 == 0:
                 print(f"[fetch] OGS API scanned {scanned}; reached older games near {game_id}", flush=True)
             game_id -= step
             time.sleep(max(0.0, float(args.ogs_api_sleep)))
             continue
-        if acceptable_game(text, props, args):
-            rank = game_bucket_rank(props)
-            if rank in needed and counts[rank] < needed[rank]:
-                digest = ranked_sgf_hash(rank, text)
-                if digest in seen_hashes:
-                    game_id -= step
-                    time.sleep(max(0.0, float(args.ogs_api_sleep)))
-                    continue
-                seen_hashes.add(digest)
-                counts[rank] += 1
-                args._accepted_new += 1
-                write_ranked_sgf(out, rank, counts[rank], f"ogs-api-{game_id}.sgf", text)
-                print(
-                    f"[fetch] OGS API: {rank} {counts[rank]}/{needed[rank]} game {game_id}",
-                    flush=True,
-                )
-                if reached_acceptance_limit(args, counts):
-                    print("[fetch] OGS API fallback: accepted SGF limit reached", flush=True)
-                    return
+        rejection = game_rejection_reason(text, props, args, needed, counts)
+        if rejection:
+            reject_counts[rejection] += 1
+            game_id -= step
+            time.sleep(max(0.0, float(args.ogs_api_sleep)))
+            continue
+        rank = game_bucket_rank(props)
+        assert rank is not None
+        digest = ranked_sgf_hash(rank, text)
+        if digest in seen_hashes:
+            reject_counts["duplicate"] += 1
+            game_id -= step
+            time.sleep(max(0.0, float(args.ogs_api_sleep)))
+            continue
+        seen_hashes.add(digest)
+        counts[rank] += 1
+        args._accepted_new += 1
+        write_ranked_sgf(out, rank, counts[rank], f"ogs-api-{game_id}.sgf", text)
+        print(
+            f"[fetch] OGS API: {rank} {counts[rank]}/{needed[rank]} game {game_id}",
+            flush=True,
+        )
+        if reached_acceptance_limit(args, counts):
+            print("[fetch] OGS API fallback: accepted SGF limit reached", flush=True)
+            return
         if scanned % progress_interval == 0:
             filled = ", ".join(f"{rank}:{counts[rank]}/{needed[rank]}" for rank in sorted(needed))
-            print(f"[fetch] OGS API progress scanned={scanned} failures={failures} {filled}", flush=True)
+            print(
+                f"[fetch] OGS API progress scanned={scanned} failures={failures} "
+                f"rejects={format_reject_counts(reject_counts)} {filled}",
+                flush=True,
+            )
         game_id -= step
         time.sleep(max(0.0, float(args.ogs_api_sleep)))
 
@@ -440,12 +454,39 @@ def unescape_sgf_value(value: str) -> str:
 
 
 def acceptable_game(text: str, props: dict[str, str], args: argparse.Namespace) -> bool:
+    return game_rejection_reason(text, props, args, {}, {}) is None
+
+
+def game_rejection_reason(
+    text: str,
+    props: dict[str, str],
+    args: argparse.Namespace,
+    needed: dict[str, int],
+    counts: dict[str, int],
+) -> str | None:
     if int_prop(props, "SZ", 19) != int(args.board_size):
-        return False
+        return "board_size"
     if int_prop(props, "HA", 0) > 0:
-        return False
+        return "handicap"
     moves = len(re.findall(r";[BW]\[", text))
-    return int(args.min_moves) <= moves <= int(args.max_moves)
+    if moves < int(args.min_moves):
+        return "short"
+    if moves > int(args.max_moves):
+        return "long"
+    rank = game_bucket_rank(props)
+    if rank is None:
+        return "rank_mismatch"
+    if needed and rank not in needed:
+        return "rank_not_requested"
+    if needed and counts.get(rank, 0) >= needed[rank]:
+        return "rank_full"
+    return None
+
+
+def format_reject_counts(reject_counts: Counter[str]) -> str:
+    if not reject_counts:
+        return "none"
+    return ",".join(f"{key}:{value}" for key, value in reject_counts.most_common(6))
 
 
 def meets_min_date(member_name: str, props: dict[str, str], min_date: str) -> bool:
