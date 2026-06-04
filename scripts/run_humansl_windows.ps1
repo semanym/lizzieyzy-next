@@ -54,6 +54,87 @@ function Invoke-Logged {
     Write-Log "END $Title elapsed=${Elapsed}s"
 }
 
+function Start-LoggedJob {
+    param(
+        [string]$Title,
+        [string]$File,
+        [string[]]$Arguments,
+        [string]$LogPath
+    )
+    Write-Log "BEGIN background $Title"
+    Write-Log "CMD $File $($Arguments -join ' ')"
+    Write-Log "background_log=$LogPath"
+    return Start-Job -Name $Title -ScriptBlock {
+        param(
+            [string]$RepoRoot,
+            [string]$Title,
+            [string]$File,
+            [string[]]$Arguments,
+            [string]$LogPath
+        )
+        Set-Location $RepoRoot
+        $Started = Get-Date
+        $Stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        "[$Stamp] BEGIN $Title" | Add-Content -Path $LogPath -Encoding UTF8
+        "[$Stamp] CMD $File $($Arguments -join ' ')" | Add-Content -Path $LogPath -Encoding UTF8
+        & $File @Arguments 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                $Text = "$($_.Exception.Message)"
+            } else {
+                $Text = "$_"
+            }
+            Add-Content -Path $LogPath -Value $Text -Encoding UTF8
+        }
+        $ExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+        $Elapsed = [int]((Get-Date) - $Started).TotalSeconds
+        $Stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        if ($ExitCode -eq 0) {
+            "[$Stamp] END $Title elapsed=${Elapsed}s" | Add-Content -Path $LogPath -Encoding UTF8
+        } else {
+            "[$Stamp] FAIL $Title exit=$ExitCode elapsed=${Elapsed}s" | Add-Content -Path $LogPath -Encoding UTF8
+        }
+        [pscustomobject]@{
+            ExitCode = $ExitCode
+            LogPath = $LogPath
+        }
+    } -ArgumentList $RepoRoot, $Title, $File, $Arguments, $LogPath
+}
+
+function Wait-LoggedJob {
+    param(
+        [object]$Job,
+        [string]$Title
+    )
+    if ($null -eq $Job) {
+        return
+    }
+    $Started = Get-Date
+    while ($Job.State -eq "Running") {
+        Wait-Job -Job $Job -Timeout 30 | Out-Null
+        if ($Job.State -eq "Running") {
+            $Elapsed = [int]((Get-Date) - $Started).TotalSeconds
+            Write-Log "background $Title still running elapsed=${Elapsed}s"
+        }
+    }
+    $Result = Receive-Job -Job $Job
+    Remove-Job -Job $Job
+    $ElapsedTotal = [int]((Get-Date) - $Started).TotalSeconds
+    $ExitCode = 0
+    if ($Result -and $null -ne $Result.ExitCode) {
+        $ExitCode = [int]$Result.ExitCode
+    } elseif ($Job.State -ne "Completed") {
+        $ExitCode = 1
+    }
+    if ($ExitCode -ne 0) {
+        Write-Log "FAIL background $Title exit=$ExitCode elapsed=${ElapsedTotal}s"
+        if ($Result -and $Result.LogPath) {
+            Write-Log "background failure log: $($Result.LogPath)"
+        }
+        throw "$Title failed with exit code $ExitCode"
+    }
+    Write-Log "END background $Title elapsed=${ElapsedTotal}s"
+}
+
 function Test-RequiredFile {
     param([string]$Label, [string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -256,7 +337,28 @@ if ($AutoFetchOpenSgfs -eq "1" -and $RefreshSgfs -eq "1" -and (Test-Path -Litera
     Remove-Item -LiteralPath $SgfByRankRoot -Recurse -Force
 }
 
+$FetchRemainingJob = $null
+
 if ($AutoFetchOpenSgfs -eq "1") {
+    $RemainingFetchArgs = @(
+        "scripts\fetch_open_ranked_sgf_samples.py",
+        "--out", $SgfByRankRoot,
+        "--per-rank", "$PerRank",
+        "--min-moves", "$MinMoves",
+        "--ogs-url", $OgsUrl,
+        "--ogs-min-date", $OgsMinDate,
+        "--http-retries", "$OgsHttpRetries",
+        "--retry-delay", "$OgsRetryDelay",
+        "--timeout", "$OgsTimeout",
+        "--ogs-api-sleep", "$OgsApiSleep",
+        "--ogs-api-max-requests", "$OgsApiMaxRequests",
+        "--ogs-api-progress-interval", "$OgsApiProgressInterval",
+        "--ranks", $LabelRanks,
+        "--append"
+    )
+    if ($OgsApiFallback -ne "1") { $RemainingFetchArgs += "--no-ogs-api-fallback" }
+    if ($AllowPartialSgfs -eq "1") { $RemainingFetchArgs += "--allow-partial" }
+
     if ($IncrementalFirstBatch -gt 0) {
         $IncrementalRanks = "18k,17k,16k,15k,14k,13k,12k,11k,10k,9k,8k,7k,6k,5k,4k,3k,2k,1k,1d,2d,3d,4d,5d,6d,7d,8d,9d"
         $Args = @(
@@ -292,6 +394,11 @@ if ($AutoFetchOpenSgfs -eq "1") {
                 "--allow-partial"
             )
             if ((Get-SgfCount $PreparedSgf) -gt 0) {
+                $FetchRemainingJob = Start-LoggedJob `
+                    -Title "fetch remaining SGF samples" `
+                    -File "python" `
+                    -Arguments $RemainingFetchArgs `
+                    -LogPath (Join-Path $Out "fetch-remaining.log")
                 Invoke-Logged "evaluate first incremental SGF batch" "python" @(
                     "scripts\evaluate_strength_samples.py", "$PreparedSgf\**\*.sgf",
                     "--katago", $Katago,
@@ -320,25 +427,11 @@ if ($AutoFetchOpenSgfs -eq "1") {
         }
     }
 
-    $Args = @(
-        "scripts\fetch_open_ranked_sgf_samples.py",
-        "--out", $SgfByRankRoot,
-        "--per-rank", "$PerRank",
-        "--min-moves", "$MinMoves",
-        "--ogs-url", $OgsUrl,
-        "--ogs-min-date", $OgsMinDate,
-        "--http-retries", "$OgsHttpRetries",
-        "--retry-delay", "$OgsRetryDelay",
-        "--timeout", "$OgsTimeout",
-        "--ogs-api-sleep", "$OgsApiSleep",
-        "--ogs-api-max-requests", "$OgsApiMaxRequests",
-        "--ogs-api-progress-interval", "$OgsApiProgressInterval",
-        "--ranks", $LabelRanks,
-        "--append"
-    )
-    if ($OgsApiFallback -ne "1") { $Args += "--no-ogs-api-fallback" }
-    if ($AllowPartialSgfs -eq "1") { $Args += "--allow-partial" }
-    Invoke-Logged "fetch remaining SGF samples" "python" $Args
+    if ($null -eq $FetchRemainingJob) {
+        Invoke-Logged "fetch remaining SGF samples" "python" $RemainingFetchArgs
+    } else {
+        Wait-LoggedJob -Job $FetchRemainingJob -Title "fetch remaining SGF samples"
+    }
 } elseif (-not (Test-Path -LiteralPath $SgfByRankRoot -PathType Container)) {
     throw "SGF_BY_RANK_ROOT not found and AUTO_FETCH_OPEN_SGFS is not 1: $SgfByRankRoot"
 }
