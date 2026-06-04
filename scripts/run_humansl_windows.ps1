@@ -184,7 +184,8 @@ if ($Preflight -eq "1") {
         "--human-model", $HumanModel,
         "--profiles", "rank_2k",
         "--repeats", "1",
-        "--max-queries", "2"
+        "--max-queries", "2",
+        "--timeout", "$PreflightTimeout"
     )
     Invoke-Logged "preflight evaluate one SGF" "python" @(
         "scripts\evaluate_strength_samples.py", "$PreflightSgfDir\*.sgf",
