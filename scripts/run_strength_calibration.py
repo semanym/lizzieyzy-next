@@ -279,7 +279,7 @@ def normalize_rank(text: str | None, player_name: Any = None) -> Rank | None:
             return Rank(raw, -number)
         return None
     if "d" in lowered or "段" in raw:
-        if 1 <= number <= 9:
+        if 1 <= number <= 12:
             return Rank(raw, number)
         return None
     return None
