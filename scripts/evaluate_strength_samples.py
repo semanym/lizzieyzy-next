@@ -689,8 +689,15 @@ def evaluate_games_parallel_with_progress(
                 completed += 1
                 completed_units += position_totals.get(index, 0)
                 active_progress.pop(index, None)
-                print(f"[{completed}/{total} done] {index}: {game.path.name}", flush=True)
-                write_results(results, args.player, jsonl_file)
+                if results:
+                    print(f"[{completed}/{total} done] {index}: {game.path.name}", flush=True)
+                    write_results(results, args.player, jsonl_file)
+                else:
+                    print(
+                        f"[{completed}/{total} skipped] {index}: {game.path.name} "
+                        "no result rows were produced",
+                        flush=True,
+                    )
             drain_progress_queue(progress_queue, active_progress)
             print_progress(
                 completed,
