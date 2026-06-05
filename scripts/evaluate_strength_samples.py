@@ -1094,7 +1094,7 @@ def completed_game_keys(jsonl_path: Path) -> set[str]:
 def completed_move_game_keys(jsonl_path: Path) -> set[str]:
     if not jsonl_path.exists():
         return set()
-    keys: set[str] = set()
+    rows_by_game: dict[str, dict[str, Any]] = {}
     with jsonl_path.open(encoding="utf-8", errors="replace") as handle:
         for line in handle:
             line = line.strip()
@@ -1106,8 +1106,36 @@ def completed_move_game_keys(jsonl_path: Path) -> set[str]:
                 continue
             key = game_key(Path(str(row.get("path") or "")))
             if key:
-                keys.add(key)
-    return keys
+                entry = rows_by_game.setdefault(
+                    key,
+                    {
+                        "move_numbers": set(),
+                        "sides": set(),
+                        "analyzed_moves": 0,
+                    },
+                )
+                move_number = int_number(row.get("move_number"))
+                if move_number > 0:
+                    entry["move_numbers"].add(move_number)
+                side = str(row.get("side") or "")
+                if side in {"B", "W"}:
+                    entry["sides"].add(side)
+                entry["analyzed_moves"] = max(
+                    int(entry["analyzed_moves"]),
+                    int_number(row.get("analyzed_moves")),
+                )
+    completed: set[str] = set()
+    for key, entry in rows_by_game.items():
+        analyzed_moves = int(entry["analyzed_moves"])
+        move_numbers = entry["move_numbers"]
+        if (
+            analyzed_moves > 0
+            and len(move_numbers) >= analyzed_moves
+            and max(move_numbers, default=0) >= analyzed_moves
+            and {"B", "W"}.issubset(entry["sides"])
+        ):
+            completed.add(key)
+    return completed
 
 
 def game_key(path: Path) -> str:

@@ -153,8 +153,11 @@ def package_bundle(args: argparse.Namespace) -> None:
     move_rows: list[dict[str, Any]] = []
     if args.move_jsonl:
         move_jsonl_path = Path(args.move_jsonl)
-        if move_jsonl_path.exists():
-            move_rows = load_jsonl_rows(move_jsonl_path)
+        if not move_jsonl_path.exists():
+            raise ValidationError(f"missing move-level JSONL: {move_jsonl_path}")
+        move_rows = load_jsonl_rows(move_jsonl_path)
+        if not move_rows:
+            raise ValidationError(f"move-level JSONL is empty: {move_jsonl_path}")
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -227,6 +230,12 @@ def validate_bundle(bundle: Path, *, require_humansl: bool) -> dict[str, Any]:
         if expected_count and expected_count != len(rows):
             raise ValidationError(
                 f"manifest row_count {expected_count} does not match {JSONL_NAME} {len(rows)}"
+            )
+        expected_move_count = int(manifest.get("move_row_count") or 0)
+        if expected_move_count and expected_move_count != len(move_rows):
+            raise ValidationError(
+                f"manifest move_row_count {expected_move_count} does not match "
+                f"{MOVE_JSONL_NAME} {len(move_rows)}"
             )
         return {
             "bundle_id": manifest.get("bundle_id", ""),
