@@ -23,10 +23,7 @@ $Prepared = Join-Path $Out "prepared-sgf"
 $Jsonl = Join-Path $Out "evaluation.jsonl"
 $MoveJsonl = Join-Path $Out "move-evaluation.jsonl"
 $Log = Join-Path $Out "batch-evaluate-existing.log"
-$FetchMissingLog = Join-Path $Out "fetch-missing.log"
 $LabelRanks = "18k,17k,16k,15k,14k,13k,12k,11k,10k,9k,8k,7k,6k,5k,4k,3k,2k,1k,1d,2d,3d,4d,5d,6d,7d,8d,9d,10d,11d"
-$MissingAmateurRanks = "18k,17k,16k,15k,14k,2d,3d,4d,5d,6d,7d,8d,9d"
-$MissingProRanks = "10d,11d"
 $Profiles = "rank_18k,rank_17k,rank_16k,rank_15k,rank_14k,rank_13k,rank_12k,rank_11k,rank_10k,rank_9k,rank_8k,rank_7k,rank_6k,rank_5k,rank_4k,rank_3k,rank_2k,rank_1k,rank_1d,rank_2d,rank_3d,rank_4d,rank_5d,rank_6d,rank_7d,rank_8d,rank_9d"
 
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
@@ -65,38 +62,6 @@ function Invoke-Logged {
     Write-Log "END $Title"
 }
 
-function Start-FetchMissingSamples {
-    $FetchScript = Join-Path $Out "fetch-missing.ps1"
-    $ExistingFetch = Get-CimInstance Win32_Process | Where-Object {
-        $_.CommandLine -match "fetch_open_ranked_sgf_samples|fetch-missing"
-    } | Select-Object -First 1
-    if ($null -ne $ExistingFetch) {
-        Write-Log "fetch missing SGF samples already running pid=$($ExistingFetch.ProcessId); log: $FetchMissingLog"
-        return
-    }
-    $Content = @"
-Set-StrictMode -Version 2.0
-`$ErrorActionPreference = "Continue"
-Set-Location "$RepoRoot"
-"[fetch-missing] start `$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" | Tee-Object -FilePath "$FetchMissingLog" -Append
-"[fetch-missing] phase=pro-jgdb ranks=$MissingProRanks" | Tee-Object -FilePath "$FetchMissingLog" -Append
-python scripts\fetch_open_ranked_sgf_samples.py --out "$SgfByRank" --append --per-rank 25 --ranks "$MissingProRanks" --min-moves 80 --max-moves 500 --board-size 19 --skip-ogs --http-retries 2 --retry-delay 10 --timeout 60 --allow-partial 2>&1 | Tee-Object -FilePath "$FetchMissingLog" -Append
-"[fetch-missing] pro-jgdb exit `$LASTEXITCODE at `$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" | Tee-Object -FilePath "$FetchMissingLog" -Append
-"[fetch-missing] phase=amateur-ogs ranks=$MissingAmateurRanks" | Tee-Object -FilePath "$FetchMissingLog" -Append
-python scripts\fetch_open_ranked_sgf_samples.py --out "$SgfByRank" --append --per-rank 25 --ranks "$MissingAmateurRanks" --min-moves 80 --max-moves 500 --board-size 19 --prefer-ogs-api --skip-jgdb --ogs-api-fallback --ogs-api-sleep 0.5 --ogs-api-max-requests 250000 --ogs-api-progress-interval 25 --http-retries 2 --retry-delay 10 --timeout 30 --allow-partial 2>&1 | Tee-Object -FilePath "$FetchMissingLog" -Append
-"[fetch-missing] amateur-ogs exit `$LASTEXITCODE at `$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" | Tee-Object -FilePath "$FetchMissingLog" -Append
-exit 0
-"@
-    Set-Content -Path $FetchScript -Value $Content -Encoding UTF8
-    Write-Log "BEGIN fetch missing SGF samples in background"
-    Write-Log "CMD powershell -NoProfile -ExecutionPolicy Bypass -File $FetchScript"
-    Write-Log "fetch missing SGF samples log: $FetchMissingLog"
-    Start-Process -FilePath "powershell" `
-        -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $FetchScript) `
-        -WorkingDirectory $RepoRoot `
-        -WindowStyle Hidden | Out-Null
-}
-
 "[run] existing SGF batch evaluation" | Set-Content -Path $Log -Encoding UTF8
 
 Invoke-Logged "prepare existing ranked SGFs" "python" @(
@@ -107,8 +72,6 @@ Invoke-Logged "prepare existing ranked SGFs" "python" @(
     "--ranks", $LabelRanks,
     "--allow-partial"
 )
-
-Start-FetchMissingSamples
 
 Invoke-Logged "evaluate existing ranked SGFs" "python" @(
     "scripts\evaluate_strength_samples.py", "$Prepared\**\*.sgf",
