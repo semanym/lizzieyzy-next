@@ -206,6 +206,7 @@ $OgsApiFallback = Get-EnvOrDefault "OGS_API_FALLBACK" "1"
 $OgsApiSleep = Get-EnvOrDefault "OGS_API_SLEEP" "0.5"
 $OgsApiMaxRequests = Get-EnvOrDefault "OGS_API_MAX_REQUESTS" "250000"
 $OgsApiProgressInterval = Get-EnvOrDefault "OGS_API_PROGRESS_INTERVAL" "25"
+$OgsPlayerMaxGames = Get-EnvOrDefault "OGS_PLAYER_MAX_GAMES" "2"
 $IncrementalFirstBatch = [int](Get-EnvOrDefault "INCREMENTAL_FIRST_BATCH" "8")
 $IncrementalMaxRequests = Get-EnvOrDefault "INCREMENTAL_OGS_API_MAX_REQUESTS" "1000"
 $FetchAfterFirstBatchWaitSeconds = [int](Get-EnvOrDefault "FETCH_AFTER_FIRST_BATCH_WAIT_SECONDS" "60")
@@ -268,6 +269,7 @@ Write-Log "ogs_api_fallback=$OgsApiFallback"
 Write-Log "ogs_api_sleep=$OgsApiSleep"
 Write-Log "ogs_api_max_requests=$OgsApiMaxRequests"
 Write-Log "ogs_api_progress_interval=$OgsApiProgressInterval"
+Write-Log "ogs_player_max_games=$OgsPlayerMaxGames"
 Write-Log "incremental_first_batch=$IncrementalFirstBatch"
 Write-Log "incremental_ogs_api_max_requests=$IncrementalMaxRequests"
 Write-Log "fetch_after_first_batch_wait_seconds=$FetchAfterFirstBatchWaitSeconds"
@@ -378,6 +380,7 @@ if ($AutoFetchOpenSgfs -eq "1") {
         "--ogs-api-sleep", "$OgsApiSleep",
         "--ogs-api-max-requests", "$OgsApiMaxRequests",
         "--ogs-api-progress-interval", "$OgsApiProgressInterval",
+        "--ogs-player-max-games", "$OgsPlayerMaxGames",
         "--ranks", $LabelRanks,
         "--append"
     )
@@ -399,6 +402,7 @@ if ($AutoFetchOpenSgfs -eq "1") {
             "--ogs-api-sleep", "$OgsApiSleep",
             "--ogs-api-max-requests", "$IncrementalMaxRequests",
             "--ogs-api-progress-interval", "$OgsApiProgressInterval",
+            "--ogs-player-max-games", "$OgsPlayerMaxGames",
             "--ranks", $IncrementalRanks,
             "--append",
             "--prefer-ogs-api",
