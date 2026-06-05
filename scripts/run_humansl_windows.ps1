@@ -103,17 +103,30 @@ function Start-LoggedJob {
 function Wait-LoggedJob {
     param(
         [object]$Job,
-        [string]$Title
+        [string]$Title,
+        [int]$MaxWaitSeconds = -1,
+        [bool]$StopOnTimeout = $false
     )
     if ($null -eq $Job) {
         return
     }
     $Started = Get-Date
+    $StoppedOnTimeout = $false
     while ($Job.State -eq "Running") {
         Wait-Job -Job $Job -Timeout 30 | Out-Null
+        $Elapsed = [int]((Get-Date) - $Started).TotalSeconds
         if ($Job.State -eq "Running") {
-            $Elapsed = [int]((Get-Date) - $Started).TotalSeconds
             Write-Log "background $Title still running elapsed=${Elapsed}s"
+            if ($MaxWaitSeconds -ge 0 -and $Elapsed -ge $MaxWaitSeconds) {
+                if ($StopOnTimeout) {
+                    Write-Log "stopping background $Title after ${Elapsed}s; continuing with SGFs fetched so far"
+                    Stop-Job -Job $Job -ErrorAction SilentlyContinue
+                    $StoppedOnTimeout = $true
+                    break
+                }
+                Write-Log "leaving background $Title running after ${Elapsed}s"
+                return
+            }
         }
     }
     $Result = Receive-Job -Job $Job
@@ -122,6 +135,8 @@ function Wait-LoggedJob {
     $ExitCode = 0
     if ($Result -and $null -ne $Result.ExitCode) {
         $ExitCode = [int]$Result.ExitCode
+    } elseif ($StoppedOnTimeout) {
+        $ExitCode = 0
     } elseif ($Job.State -ne "Completed") {
         $ExitCode = 1
     }
@@ -132,7 +147,11 @@ function Wait-LoggedJob {
         }
         throw "$Title failed with exit code $ExitCode"
     }
-    Write-Log "END background $Title elapsed=${ElapsedTotal}s"
+    if ($StoppedOnTimeout) {
+        Write-Log "STOPPED background $Title elapsed=${ElapsedTotal}s"
+    } else {
+        Write-Log "END background $Title elapsed=${ElapsedTotal}s"
+    }
 }
 
 function Test-RequiredFile {
@@ -189,6 +208,7 @@ $OgsApiMaxRequests = Get-EnvOrDefault "OGS_API_MAX_REQUESTS" "250000"
 $OgsApiProgressInterval = Get-EnvOrDefault "OGS_API_PROGRESS_INTERVAL" "25"
 $IncrementalFirstBatch = [int](Get-EnvOrDefault "INCREMENTAL_FIRST_BATCH" "8")
 $IncrementalMaxRequests = Get-EnvOrDefault "INCREMENTAL_OGS_API_MAX_REQUESTS" "1000"
+$FetchAfterFirstBatchWaitSeconds = [int](Get-EnvOrDefault "FETCH_AFTER_FIRST_BATCH_WAIT_SECONDS" "60")
 $AllowPartialSgfs = Get-EnvOrDefault "ALLOW_PARTIAL_SGFS" "0"
 $Out = Normalize-ExternalValue (Get-EnvOrDefault "OUT" (Join-Path $RepoRoot "target\humansl-gpu-run"))
 $MachineId = Get-EnvOrDefault "MACHINE_ID" "windows-opencl-gpu"
@@ -249,6 +269,7 @@ Write-Log "ogs_api_max_requests=$OgsApiMaxRequests"
 Write-Log "ogs_api_progress_interval=$OgsApiProgressInterval"
 Write-Log "incremental_first_batch=$IncrementalFirstBatch"
 Write-Log "incremental_ogs_api_max_requests=$IncrementalMaxRequests"
+Write-Log "fetch_after_first_batch_wait_seconds=$FetchAfterFirstBatchWaitSeconds"
 Write-Log "out=$Out"
 Write-Log "settings per_rank=$PerRank max_visits=$MaxVisits parallel_engines=$ParallelEngines max_moves=$MaxMoves min_moves=$MinMoves"
 
@@ -430,7 +451,11 @@ if ($AutoFetchOpenSgfs -eq "1") {
     if ($null -eq $FetchRemainingJob) {
         Invoke-Logged "fetch remaining SGF samples" "python" $RemainingFetchArgs
     } else {
-        Wait-LoggedJob -Job $FetchRemainingJob -Title "fetch remaining SGF samples"
+        Wait-LoggedJob `
+            -Job $FetchRemainingJob `
+            -Title "fetch remaining SGF samples" `
+            -MaxWaitSeconds $FetchAfterFirstBatchWaitSeconds `
+            -StopOnTimeout $true
     }
 } elseif (-not (Test-Path -LiteralPath $SgfByRankRoot -PathType Container)) {
     throw "SGF_BY_RANK_ROOT not found and AUTO_FETCH_OPEN_SGFS is not 1: $SgfByRankRoot"
@@ -454,7 +479,8 @@ if ($AutoFetchOpenSgfs -ne "1") {
         "--input-root", $SgfByRankRoot,
         "--out", $PreparedSgf,
         "--per-rank", "$PerRank",
-        "--ranks", $LabelRanks
+        "--ranks", $LabelRanks,
+        "--allow-partial"
     )
 }
 
