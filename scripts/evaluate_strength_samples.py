@@ -118,7 +118,9 @@ class Game:
 
 @dataclass
 class Sample:
+    move_number: int
     color: str
+    move: str
     winrate_loss: float
     score_loss: float | None
     first_choice: bool
@@ -146,6 +148,12 @@ class HumanSlMoveResult:
     move: str
     probability: float | None
     status: str
+
+
+@dataclass
+class EvaluationRows:
+    summary_rows: list[dict[str, Any]]
+    move_rows: list[dict[str, Any]]
 
 
 class KataGoProcess:
@@ -486,6 +494,13 @@ def main() -> int:
     )
     parser.add_argument("--jsonl", help="Optional JSONL output path.")
     parser.add_argument(
+        "--move-jsonl",
+        help=(
+            "Optional move-level JSONL output path. Each row is one analyzed move and includes "
+            "raw KataGo/HumanSL features for later re-aggregation."
+        ),
+    )
+    parser.add_argument(
         "--reuse-sgf-analysis",
         action="store_true",
         help="Use saved Lizzie/LizzieYzy LZ/LZOP SGF analysis before requesting KataGo.",
@@ -531,8 +546,13 @@ def main() -> int:
             if args.player in game.black_name or args.player in game.white_name
         ]
     completed_games: set[str] = set()
+    completed_summary_games: set[str] = set()
     if args.resume_jsonl and args.jsonl:
-        completed_games = completed_game_keys(Path(args.jsonl))
+        completed_summary_games = completed_game_keys(Path(args.jsonl))
+        completed_games = completed_summary_games
+        if args.move_jsonl:
+            completed_move_games = completed_move_game_keys(Path(args.move_jsonl))
+            completed_games = completed_summary_games.intersection(completed_move_games)
         games = [game for game in games if game_key(game.path) not in completed_games]
     games = games[: max(args.max_games, 0)]
     if not games:
@@ -543,27 +563,41 @@ def main() -> int:
         return 1
 
     jsonl_file = None
+    move_jsonl_file = None
     if args.jsonl:
         jsonl_path = Path(args.jsonl)
         jsonl_path.parent.mkdir(parents=True, exist_ok=True)
         mode = "a" if args.resume_jsonl else "w"
         jsonl_file = jsonl_path.open(mode, encoding="utf-8")
+    if args.move_jsonl:
+        move_jsonl_path = Path(args.move_jsonl)
+        move_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+        mode = "a" if args.resume_jsonl else "w"
+        move_jsonl_file = move_jsonl_path.open(mode, encoding="utf-8")
 
     try:
         if args.sgf_analysis_only:
-            evaluate_games_sgf_analysis_only(args, games, jsonl_file)
+            evaluate_games_sgf_analysis_only(
+                args, games, jsonl_file, move_jsonl_file, completed_summary_games
+            )
         elif args.parallel_engines <= 1:
-            evaluate_games_serial(args, games, jsonl_file)
+            evaluate_games_serial(args, games, jsonl_file, move_jsonl_file, completed_summary_games)
         else:
-            evaluate_games_parallel(args, games, jsonl_file)
+            evaluate_games_parallel(args, games, jsonl_file, move_jsonl_file, completed_summary_games)
     finally:
         if jsonl_file:
             jsonl_file.close()
+        if move_jsonl_file:
+            move_jsonl_file.close()
     return 0
 
 
 def evaluate_games_sgf_analysis_only(
-    args: argparse.Namespace, games: list[Game], jsonl_file: Any
+    args: argparse.Namespace,
+    games: list[Game],
+    jsonl_file: Any,
+    move_jsonl_file: Any,
+    completed_summary_games: set[str],
 ) -> None:
     for index, game in enumerate(games, start=1):
         print(f"[{index}/{len(games)}] {game.path.name} (saved SGF analysis)")
@@ -577,10 +611,16 @@ def evaluate_games_sgf_analysis_only(
             reuse_sgf_analysis=True,
             sgf_analysis_only=True,
         )
-        write_results(results, args.player, jsonl_file)
+        write_results(results, args.player, jsonl_file, move_jsonl_file, completed_summary_games)
 
 
-def evaluate_games_serial(args: argparse.Namespace, games: list[Game], jsonl_file: Any) -> None:
+def evaluate_games_serial(
+    args: argparse.Namespace,
+    games: list[Game],
+    jsonl_file: Any,
+    move_jsonl_file: Any,
+    completed_summary_games: set[str],
+) -> None:
     katago = KataGoProcess(
         Path(args.katago),
         Path(args.model),
@@ -604,20 +644,34 @@ def evaluate_games_serial(args: argparse.Namespace, games: list[Game], jsonl_fil
                 human_max_moves=args.human_max_moves or args.max_moves,
                 human_batch_positions=args.human_batch_positions,
             )
-            write_results(results, args.player, jsonl_file)
+            write_results(results, args.player, jsonl_file, move_jsonl_file, completed_summary_games)
     finally:
         katago.close()
 
 
-def evaluate_games_parallel(args: argparse.Namespace, games: list[Game], jsonl_file: Any) -> None:
+def evaluate_games_parallel(
+    args: argparse.Namespace,
+    games: list[Game],
+    jsonl_file: Any,
+    move_jsonl_file: Any,
+    completed_summary_games: set[str],
+) -> None:
     workers = min(max(args.parallel_engines, 1), len(games))
     print(f"[parallel] using {workers} KataGo analysis processes", flush=True)
     with multiprocessing.Manager() as manager:
-        evaluate_games_parallel_with_progress(args, games, jsonl_file, workers, manager.Queue())
+        evaluate_games_parallel_with_progress(
+            args, games, jsonl_file, move_jsonl_file, completed_summary_games, workers, manager.Queue()
+        )
 
 
 def evaluate_games_parallel_with_progress(
-    args: argparse.Namespace, games: list[Game], jsonl_file: Any, workers: int, progress_queue: Any
+    args: argparse.Namespace,
+    games: list[Game],
+    jsonl_file: Any,
+    move_jsonl_file: Any,
+    completed_summary_games: set[str],
+    workers: int,
+    progress_queue: Any,
 ) -> None:
     init_args = (
         args.katago,
@@ -689,9 +743,15 @@ def evaluate_games_parallel_with_progress(
                 completed += 1
                 completed_units += position_totals.get(index, 0)
                 active_progress.pop(index, None)
-                if results:
+                if results.summary_rows:
                     print(f"[{completed}/{total} done] {index}: {game.path.name}", flush=True)
-                    write_results(results, args.player, jsonl_file)
+                    write_results(
+                        results,
+                        args.player,
+                        jsonl_file,
+                        move_jsonl_file,
+                        completed_summary_games,
+                    )
                 else:
                     print(
                         f"[{completed}/{total} skipped] {index}: {game.path.name} "
@@ -888,7 +948,7 @@ def restart_worker_katago() -> None:
     )
 
 
-def worker_evaluate_game(item: tuple[int, Game]) -> list[dict[str, Any]]:
+def worker_evaluate_game(item: tuple[int, Game]) -> EvaluationRows:
     if _WORKER_KATAGO is None:
         raise RuntimeError("KataGo worker was not initialized")
     index, game = item
@@ -962,17 +1022,32 @@ def worker_evaluate_game(item: tuple[int, Game]) -> list[dict[str, Any]]:
                 flush=True,
             )
             restart_worker_katago()
-            return []
+            return EvaluationRows([], [])
 
 
-def write_results(results: list[dict[str, Any]], player: str | None, jsonl_file: Any) -> None:
-    for row in results:
+def write_results(
+    results: EvaluationRows,
+    player: str | None,
+    jsonl_file: Any,
+    move_jsonl_file: Any,
+    completed_summary_games: set[str] | None = None,
+) -> None:
+    completed_summary_games = completed_summary_games or set()
+    summary_key = ""
+    for row in results.summary_rows:
         if player and player not in str(row["player"]):
             continue
         print(format_row(row))
-        if jsonl_file:
+        summary_key = game_key(Path(str(row.get("path") or "")))
+        if jsonl_file and summary_key not in completed_summary_games:
             jsonl_file.write(json.dumps(row, ensure_ascii=False) + "\n")
             jsonl_file.flush()
+    if move_jsonl_file:
+        for row in results.move_rows:
+            if player and player not in str(row.get("player", "")):
+                continue
+            move_jsonl_file.write(json.dumps(row, ensure_ascii=False) + "\n")
+        move_jsonl_file.flush()
 
 
 def paths_from_jsonl(jsonl_path: Path) -> list[str]:
@@ -1014,6 +1089,25 @@ def completed_game_keys(jsonl_path: Path) -> set[str]:
             if key and side in {"B", "W"}:
                 sides_by_game.setdefault(key, set()).add(side)
     return {key for key, sides in sides_by_game.items() if {"B", "W"}.issubset(sides)}
+
+
+def completed_move_game_keys(jsonl_path: Path) -> set[str]:
+    if not jsonl_path.exists():
+        return set()
+    keys: set[str] = set()
+    with jsonl_path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            key = game_key(Path(str(row.get("path") or "")))
+            if key:
+                keys.add(key)
+    return keys
 
 
 def game_key(path: Path) -> str:
@@ -1348,7 +1442,7 @@ def evaluate_game(
     human_max_visits: int = 1,
     human_max_moves: int = 0,
     human_batch_positions: int = 64,
-) -> list[dict[str, Any]]:
+) -> EvaluationRows:
     moves = game.moves[: min(len(game.moves), max_moves)]
 
     def report_progress(
@@ -1405,11 +1499,12 @@ def evaluate_game(
         current = analyses[index + 1]
         if previous is None:
             continue
-        sample = sample_move(color, move, previous, current)
+        sample = sample_move(index + 1, color, move, previous, current)
         if sample:
             samples[color].append(sample)
 
     human_features: dict[str, dict[str, Any]] = {"B": {}, "W": {}}
+    human_results: list[HumanSlMoveResult] = []
     if katago is not None and human_profiles:
         human_move_limit = min(len(moves), human_max_moves or len(moves))
         human_queries = build_humansl_queries(moves[:human_move_limit], human_profiles)
@@ -1436,7 +1531,7 @@ def evaluate_game(
         analysis_source = "mixed"
     elif saved_positions:
         analysis_source = "sgf"
-    return [
+    summary_rows = [
         side_report(
             game,
             "B",
@@ -1460,6 +1555,18 @@ def evaluate_game(
             human_features["W"],
         ),
     ]
+    move_rows = move_detail_rows(
+        game,
+        samples["B"] + samples["W"],
+        len(moves),
+        max_visits,
+        analysis_source,
+        saved_positions,
+        katago_positions,
+        human_results,
+        human_profiles or [],
+    )
+    return EvaluationRows(summary_rows, move_rows)
 
 
 def build_humansl_queries(
@@ -1472,6 +1579,92 @@ def build_humansl_queries(
         for profile in profiles:
             queries.append(HumanSlQuery(move_number, color, played, profile, position))
     return queries
+
+
+def move_detail_rows(
+    game: Game,
+    samples: list[Sample],
+    analyzed_moves: int,
+    max_visits: int,
+    analysis_source: str,
+    sgf_analysis_positions: int,
+    katago_analysis_positions: int,
+    human_results: list[HumanSlMoveResult],
+    profiles: list[str],
+) -> list[dict[str, Any]]:
+    human_by_move: dict[tuple[int, str], list[HumanSlMoveResult]] = {}
+    for result in human_results:
+        human_by_move.setdefault((result.move_number, result.color), []).append(result)
+
+    rows: list[dict[str, Any]] = []
+    for sample in sorted(samples, key=lambda row: row.move_number):
+        player = game.black_name if sample.color == "B" else game.white_name
+        fox_rank = game.black_rank if sample.color == "B" else game.white_rank
+        human_rows = human_by_move.get((sample.move_number, sample.color), [])
+        probability_by_profile: dict[str, float | None] = {}
+        logp_by_profile: dict[str, float] = {}
+        status_by_profile: dict[str, str] = {}
+        for result in human_rows:
+            probability_by_profile[result.profile] = (
+                None if result.probability is None else round(result.probability, 12)
+            )
+            logp_by_profile[result.profile] = round(
+                math.log(result.probability if result.probability is not None else POLICY_FLOOR),
+                6,
+            )
+            status_by_profile[result.profile] = result.status
+        best_profile = humansl_best_profile(logp_by_profile)
+        row: dict[str, Any] = {
+            "schema_version": "move_detail_v1",
+            "path": str(game.path),
+            "game_key": game_key(game.path),
+            "side": sample.color,
+            "player": player,
+            "fox_rank": fox_rank,
+            "move_number": sample.move_number,
+            "move": sample.move,
+            "stage": humansl_stage(sample.move_number, analyzed_moves),
+            "board_size": game.size,
+            "komi": game.komi,
+            "handicap": game.handicap,
+            "analyzed_moves": analyzed_moves,
+            "max_visits": max_visits,
+            "analysis_source": analysis_source,
+            "sgf_analysis_positions": sgf_analysis_positions,
+            "katago_analysis_positions": katago_analysis_positions,
+            "winrate_loss": round(sample.winrate_loss, 6),
+            "score_loss": None if sample.score_loss is None else round(sample.score_loss, 6),
+            "first_choice": sample.first_choice,
+            "ai_rank": sample.ai_rank,
+            "category": sample.category,
+            "score_equivalent_loss": round(sample.score_equivalent_loss, 6),
+            "complexity": round(sample.complexity, 6),
+            "adjusted_weight": round(sample.adjusted_weight, 6),
+        }
+        if profiles:
+            row.update(
+                {
+                    "human_sl_profiles": profiles,
+                    "human_sl_probability_by_profile": probability_by_profile,
+                    "human_sl_log_probability_by_profile": logp_by_profile,
+                    "human_sl_status_by_profile": status_by_profile,
+                    "human_sl_best_profile": best_profile,
+                    "human_sl_best_second_gap": round(humansl_best_second_gap(logp_by_profile), 6),
+                    "human_sl_high_low_trend": round(humansl_high_low_trend(logp_by_profile), 6),
+                    "human_sl_anomalous_sample_count": sum(
+                        1
+                        for result in human_rows
+                        if result.status != "ok" or result.probability is None
+                    ),
+                }
+            )
+            for profile in profiles:
+                if profile in probability_by_profile:
+                    row[f"human_sl_probability_{profile}"] = probability_by_profile[profile]
+                if profile in logp_by_profile:
+                    row[f"human_sl_logp_{profile}"] = logp_by_profile[profile]
+        rows.append(row)
+    return rows
 
 
 def humansl_result_from_response(
@@ -1661,7 +1854,11 @@ def split_humansl_profiles(raw: str | list[str]) -> list[str]:
 
 
 def sample_move(
-    color: str, played: str, previous: dict[str, Any], current: dict[str, Any] | None
+    move_number: int,
+    color: str,
+    played: str,
+    previous: dict[str, Any],
+    current: dict[str, Any] | None,
 ) -> Sample | None:
     move_infos = sorted(previous.get("moveInfos") or [], key=lambda move: move.get("order", 0))
     if not move_infos:
@@ -1681,7 +1878,9 @@ def sample_move(
     )
     complexity_value = complexity(move_infos)
     return Sample(
+        move_number=move_number,
         color=color,
+        move=played,
         winrate_loss=positive(winrate_loss),
         score_loss=None if score_loss is None else positive(score_loss),
         first_choice=actual_index == 0 or played.lower() == str(top.get("move", "")).lower(),

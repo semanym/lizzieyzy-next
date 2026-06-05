@@ -241,6 +241,7 @@ New-Item -ItemType Directory -Force -Path $Out | Out-Null
 $script:RunLog = Join-Path $Out "run.log"
 $PreparedSgf = Join-Path $Out "prepared-sgf"
 $EvaluationJsonl = Join-Path $Out "evaluation.jsonl"
+$MoveEvaluationJsonl = Join-Path $Out "move-evaluation.jsonl"
 $MergedDir = Join-Path $Out "merged"
 $AnalysisDir = Join-Path $Out "analysis"
 $BundlePath = Join-Path $Out "humansl-results-$MachineId.zip"
@@ -284,6 +285,7 @@ if ($Preflight -eq "1") {
     $PreflightSgfDir = Join-Path $PreflightDir "sgf\2k"
     $PreflightSgf = Join-Path $PreflightSgfDir "preflight-2k.sgf"
     $PreflightJsonl = Join-Path $PreflightDir "evaluation.jsonl"
+    $PreflightMoveJsonl = Join-Path $PreflightDir "move-evaluation.jsonl"
     $PreflightBundle = Join-Path $PreflightDir "humansl-preflight.zip"
     $PreflightMerged = Join-Path $PreflightDir "merged"
     $PreflightAnalysis = Join-Path $PreflightDir "analysis"
@@ -320,11 +322,13 @@ if ($Preflight -eq "1") {
         "--parallel-engines", "1",
         "--katago-response-timeout", "$PreflightTimeout",
         "--rules", $Rules,
-        "--jsonl", $PreflightJsonl
+        "--jsonl", $PreflightJsonl,
+        "--move-jsonl", $PreflightMoveJsonl
     )
     Invoke-Logged "preflight package result" "python" @(
         "scripts\humansl_results.py", "package",
         "--evaluation-jsonl", $PreflightJsonl,
+        "--move-jsonl", $PreflightMoveJsonl,
         "--out", $PreflightBundle,
         "--machine-id", "${MachineId}-preflight",
         "--operator", $Operator,
@@ -438,7 +442,8 @@ if ($AutoFetchOpenSgfs -eq "1") {
                     "--katago-response-timeout", "$KatagoResponseTimeout",
                     "--rules", $Rules,
                     "--resume-jsonl",
-                    "--jsonl", $EvaluationJsonl
+                    "--jsonl", $EvaluationJsonl,
+                    "--move-jsonl", $MoveEvaluationJsonl
                 )
             } else {
                 Write-Log "first incremental prepare produced no SGFs; continuing to full fetch"
@@ -513,12 +518,14 @@ Invoke-Logged "evaluate SGFs with KataGo and HumanSL" "python" @(
     "--katago-response-timeout", "$KatagoResponseTimeout",
     "--rules", $Rules,
     "--resume-jsonl",
-    "--jsonl", $EvaluationJsonl
+    "--jsonl", $EvaluationJsonl,
+    "--move-jsonl", $MoveEvaluationJsonl
 )
 
 Invoke-Logged "package result bundle" "python" @(
     "scripts\humansl_results.py", "package",
     "--evaluation-jsonl", $EvaluationJsonl,
+    "--move-jsonl", $MoveEvaluationJsonl,
     "--out", $BundlePath,
     "--machine-id", $MachineId,
     "--operator", $Operator,

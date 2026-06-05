@@ -21,6 +21,7 @@ DEFAULT_HUMAN_MODEL_NAME = "b18c384nbt-humanv0.bin.gz"
 DEFAULT_HUMAN_MODEL_SHA256 = "637746e44f0efe00ad1245a50aa9bbf0716efe364c43965ead97bd6835d84ab5"
 DEFAULT_HUMAN_MODEL_BYTES = 99066230
 JSONL_NAME = "evaluation.jsonl"
+MOVE_JSONL_NAME = "move-evaluation.jsonl"
 CSV_NAME = "evaluation_summary_rows.csv"
 MANIFEST_NAME = "manifest.json"
 CHECKSUMS_NAME = "checksums.sha256"
@@ -89,6 +90,7 @@ def parse_args() -> argparse.Namespace:
 
     package = subparsers.add_parser("package", help="Create a shareable HumanSL result bundle.")
     package.add_argument("--evaluation-jsonl", required=True, help="Source evaluation JSONL.")
+    package.add_argument("--move-jsonl", help="Optional move-level evaluation JSONL.")
     package.add_argument("--out", required=True, help="Output .zip path.")
     package.add_argument("--machine-id", required=True, help="Stable ID for the runner machine.")
     package.add_argument("--operator", default="", help="Person or account who ran the batch.")
@@ -148,6 +150,11 @@ def package_bundle(args: argparse.Namespace) -> None:
     jsonl_path = Path(args.evaluation_jsonl)
     rows = load_jsonl_rows(jsonl_path)
     validate_rows(rows, require_humansl=True)
+    move_rows: list[dict[str, Any]] = []
+    if args.move_jsonl:
+        move_jsonl_path = Path(args.move_jsonl)
+        if move_jsonl_path.exists():
+            move_rows = load_jsonl_rows(move_jsonl_path)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -173,6 +180,7 @@ def package_bundle(args: argparse.Namespace) -> None:
         "rules": args.rules,
         "row_count": len(rows),
         "human_sl_row_count": count_humansl_rows(rows),
+        "move_row_count": len(move_rows),
         "note": args.note,
     }
 
@@ -180,6 +188,8 @@ def package_bundle(args: argparse.Namespace) -> None:
         root = Path(tmp)
         write_json(root / MANIFEST_NAME, manifest)
         write_jsonl(root / JSONL_NAME, rows)
+        if move_rows:
+            write_jsonl(root / MOVE_JSONL_NAME, move_rows)
         write_csv(root / CSV_NAME, rows)
         if args.run_log:
             shutil.copy2(args.run_log, root / RUN_LOG_NAME)
@@ -204,6 +214,8 @@ def validate_bundle(bundle: Path, *, require_humansl: bool) -> dict[str, Any]:
         verify_checksums(root)
         rows = load_jsonl_rows(root / JSONL_NAME)
         validate_rows(rows, require_humansl=require_humansl)
+        move_jsonl_path = root / MOVE_JSONL_NAME
+        move_rows = load_jsonl_rows(move_jsonl_path) if move_jsonl_path.exists() else []
         csv_path = root / CSV_NAME
         if csv_path.exists():
             csv_rows = load_csv_rows(csv_path)
@@ -219,6 +231,7 @@ def validate_bundle(bundle: Path, *, require_humansl: bool) -> dict[str, Any]:
         return {
             "bundle_id": manifest.get("bundle_id", ""),
             "rows": len(rows),
+            "move_rows": len(move_rows),
             "human_sl_rows": count_humansl_rows(rows),
             "manifest": manifest,
         }
@@ -227,8 +240,10 @@ def validate_bundle(bundle: Path, *, require_humansl: bool) -> dict[str, Any]:
 def merge_bundles(bundles: list[Path], out_dir: Path, *, require_humansl: bool) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     merged_rows: list[dict[str, Any]] = []
+    merged_move_rows: list[dict[str, Any]] = []
     manifests: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
+    seen_moves: set[tuple[str, str, str, int]] = set()
     for bundle in bundles:
         with extracted_bundle(bundle) as root:
             summary = validate_bundle(root, require_humansl=require_humansl)
@@ -249,9 +264,27 @@ def merge_bundles(bundles: list[Path], out_dir: Path, *, require_humansl: bool) 
                 enriched.setdefault("bundle_id", bundle_id)
                 enriched.setdefault("machine_id", machine_id)
                 merged_rows.append(enriched)
+            move_jsonl_path = root / MOVE_JSONL_NAME
+            if move_jsonl_path.exists():
+                for row in load_jsonl_rows(move_jsonl_path):
+                    key = (
+                        str(row.get("path") or row.get("sgf") or ""),
+                        str(row.get("side") or ""),
+                        str(row.get("player") or ""),
+                        int_number(row.get("move_number")),
+                    )
+                    if key in seen_moves:
+                        continue
+                    seen_moves.add(key)
+                    enriched = dict(row)
+                    enriched.setdefault("bundle_id", bundle_id)
+                    enriched.setdefault("machine_id", machine_id)
+                    merged_move_rows.append(enriched)
 
     validate_rows(merged_rows, require_humansl=require_humansl)
     write_jsonl(out_dir / JSONL_NAME, merged_rows)
+    if merged_move_rows:
+        write_jsonl(out_dir / MOVE_JSONL_NAME, merged_move_rows)
     write_csv(out_dir / CSV_NAME, merged_rows)
     write_json(
         out_dir / MANIFEST_NAME,
@@ -262,6 +295,7 @@ def merge_bundles(bundles: list[Path], out_dir: Path, *, require_humansl: bool) 
             "source_bundle_count": len(manifests),
             "row_count": len(merged_rows),
             "human_sl_row_count": count_humansl_rows(merged_rows),
+            "move_row_count": len(merged_move_rows),
             "source_bundles": manifests,
         },
     )
