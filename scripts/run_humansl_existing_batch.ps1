@@ -21,6 +21,7 @@ $Out = "target\humansl-gpu-run"
 $SgfByRank = "target\humansl-input\sgf-by-rank"
 $Prepared = Join-Path $Out "prepared-sgf"
 $Jsonl = Join-Path $Out "evaluation.jsonl"
+$MoveJsonl = Join-Path $Out "move-evaluation.jsonl"
 $Log = Join-Path $Out "batch-evaluate-existing.log"
 $LabelRanks = "18k,17k,16k,15k,14k,13k,12k,11k,10k,9k,8k,7k,6k,5k,4k,3k,2k,1k,1d,2d,3d,4d,5d,6d,7d,8d,9d,10d,11d"
 $Profiles = "rank_18k,rank_17k,rank_16k,rank_15k,rank_14k,rank_13k,rank_12k,rank_11k,rank_10k,rank_9k,rank_8k,rank_7k,rank_6k,rank_5k,rank_4k,rank_3k,rank_2k,rank_1k,rank_1d,rank_2d,rank_3d,rank_4d,rank_5d,rank_6d,rank_7d,rank_8d,rank_9d"
@@ -90,7 +91,8 @@ Invoke-Logged "evaluate existing ranked SGFs" "python" @(
     "--katago-response-timeout", "1800",
     "--rules", "Chinese",
     "--resume-jsonl",
-    "--jsonl", $Jsonl
+    "--jsonl", $Jsonl,
+    "--move-jsonl", $MoveJsonl
 )
 
 Write-Log "OK existing batch evaluation complete"
