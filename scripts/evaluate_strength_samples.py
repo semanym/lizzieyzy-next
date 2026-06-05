@@ -2659,6 +2659,10 @@ def number(value: Any) -> float:
     return 0.0
 
 
+def int_number(value: Any) -> int:
+    return int(number(value))
+
+
 def positive(value: float) -> float:
     return max(0.0, value)
 
