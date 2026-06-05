@@ -662,11 +662,14 @@ def ogs_player_source_name(source_player_id: int, player_ids: list[int], game_id
 
 
 def ogs_game_metadata_is_promising(game: dict[str, object], args: argparse.Namespace) -> bool:
-    if int_number(game.get("width")) != int(args.board_size):
+    width = int_number(game.get("width"), -1)
+    if width > 0 and width != int(args.board_size):
         return False
-    if int_number(game.get("height")) != int(args.board_size):
+    height = int_number(game.get("height"), -1)
+    if height > 0 and height != int(args.board_size):
         return False
-    if int_number(game.get("handicap")) > 0:
+    handicap = int_number(game.get("handicap"), 0)
+    if handicap > 0:
         return False
     if bool(game.get("annulled")):
         return False
