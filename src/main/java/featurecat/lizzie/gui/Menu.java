@@ -7697,9 +7697,19 @@ public class Menu extends JMenuBar {
             }
           });
 
+      JFontMenuItem humanSlGame =
+          new JFontMenuItem(resourceBundle.getString("Menu.newHumanSlGame"));
+      setToolTipJMenu(humanSlGame);
+      humanSlGame.addActionListener(
+          new ActionListener() {
+            public void actionPerformed(ActionEvent e) {
+              Lizzie.frame.startHumanSlGameDialog();
+            }
+          });
       newGamePopup.add(genmoveGame);
       newGamePopup.add(analyzeGame);
       newGamePopup.add(engineGame);
+      newGamePopup.add(humanSlGame);
 
       doubleMenuNewGame.addActionListener(
           new ActionListener() {
@@ -8946,9 +8956,18 @@ public class Menu extends JMenuBar {
           }
         });
 
+    JFontMenuItem humanSlGame = new JFontMenuItem(resourceBundle.getString("Menu.newHumanSlGame"));
+    setToolTipJMenu(humanSlGame);
+    humanSlGame.addActionListener(
+        new ActionListener() {
+          public void actionPerformed(ActionEvent e) {
+            Lizzie.frame.startHumanSlGameDialog();
+          }
+        });
     newGamePopup.add(genmoveGame);
     newGamePopup.add(analyzeGame);
     newGamePopup.add(engineGame);
+    newGamePopup.add(humanSlGame);
 
     doubleMenuNewGame.addActionListener(
         new ActionListener() {

@@ -191,6 +191,93 @@ public class HumanSlAnalysisRunner implements AutoCloseable {
     }
   }
 
+  /**
+   * Picks the move a player of the given HumanSL profile would most likely play in the position
+   * represented by {@code positionNode}. Returns the GTP move name (e.g. "Q16"), "pass", or empty
+   * if no move could be obtained.
+   */
+  public Optional<String> bestHumanMove(
+      BoardHistoryNode positionNode, String profile, Duration timeout) {
+    if (positionNode == null || profile == null) {
+      return Optional.empty();
+    }
+    if (!ensureStarted()) {
+      return Optional.empty();
+    }
+    String requestId = "humansl-genmove-" + nextRequestId.getAndIncrement();
+    JSONObject request = buildHumanSlRequest(requestId, positionNode, profile);
+    try {
+      JSONObject response = request(request, timeout == null ? Duration.ofSeconds(30) : timeout);
+      Object policy = extractHumanPolicy(response);
+      if (policy == null) {
+        return Optional.empty();
+      }
+      return Optional.ofNullable(argmaxPolicyMove(policy, Board.boardWidth, Board.boardHeight));
+    } catch (TimeoutException | IOException e) {
+      return Optional.empty();
+    }
+  }
+
+  static String argmaxPolicyMove(Object policy, int boardWidth, int boardHeight) {
+    if (policy == null) {
+      return null;
+    }
+    if (policy instanceof JSONArray) {
+      JSONArray array = (JSONArray) policy;
+      if (isNumericPolicy(array)) {
+        int bestIndex = -1;
+        double bestValue = Double.NEGATIVE_INFINITY;
+        for (int i = 0; i < array.length(); i++) {
+          Double value = coerceProbability(array.opt(i));
+          if (value != null && value.doubleValue() > bestValue) {
+            bestValue = value.doubleValue();
+            bestIndex = i;
+          }
+        }
+        if (bestIndex < 0) {
+          return null;
+        }
+        if (bestIndex == boardWidth * boardHeight) {
+          return "pass";
+        }
+        int[] coords = Board.getCoord(bestIndex);
+        return Board.convertCoordinatesToName(coords[0], coords[1]);
+      }
+      String bestMove = null;
+      double bestValue = Double.NEGATIVE_INFINITY;
+      for (int i = 0; i < array.length(); i++) {
+        Object item = array.opt(i);
+        if (!(item instanceof JSONArray)) {
+          continue;
+        }
+        JSONArray pair = (JSONArray) item;
+        if (pair.length() < 2) {
+          continue;
+        }
+        Double value = coerceProbability(pair.opt(1));
+        if (value != null && value.doubleValue() > bestValue) {
+          bestValue = value.doubleValue();
+          bestMove = pair.optString(0);
+        }
+      }
+      return bestMove;
+    }
+    if (policy instanceof JSONObject) {
+      JSONObject object = (JSONObject) policy;
+      String bestMove = null;
+      double bestValue = Double.NEGATIVE_INFINITY;
+      for (String key : object.keySet()) {
+        Double value = coerceProbability(object.opt(key));
+        if (value != null && value.doubleValue() > bestValue) {
+          bestValue = value.doubleValue();
+          bestMove = key;
+        }
+      }
+      return bestMove;
+    }
+    return null;
+  }
+
   public JSONObject request(JSONObject request, Duration timeout)
       throws IOException, TimeoutException {
     if (!started || outputStream == null) {

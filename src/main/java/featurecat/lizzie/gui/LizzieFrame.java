@@ -211,6 +211,7 @@ public class LizzieFrame extends JFrame {
   private long showControlTime;
   public boolean isPlayingAgainstLeelaz = false;
   public boolean isAnaPlayingAgainstLeelaz = false;
+  public HumanSlGameController humanSlGame = null;
   public boolean playerIsBlack = true;
   public static boolean canGoAfterload = true;
   public int winRateGridLines = 3;
@@ -6855,6 +6856,20 @@ public class LizzieFrame extends JFrame {
       showTrialBlockedHint();
       return;
     }
+    if (humanSlGame != null && !humanSlGame.isFinished()) {
+      Optional<int[]> humanSlCoords;
+      if (Lizzie.config.isThinkingMode()) {
+        humanSlCoords = boardRenderer2.convertScreenToCoordinates(x, y);
+        if (!humanSlCoords.isPresent())
+          humanSlCoords = boardRenderer.convertScreenToCoordinates(x, y);
+      } else {
+        humanSlCoords = boardRenderer.convertScreenToCoordinates(x, y);
+      }
+      if (humanSlCoords.isPresent()) {
+        humanSlGame.onBoardClicked(humanSlCoords.get()[0], humanSlCoords.get()[1]);
+      }
+      return;
+    }
     // Check for board click
     Optional<int[]> boardCoordinates;
     if (Lizzie.config.isThinkingMode()) {
@@ -9928,6 +9943,30 @@ public class LizzieFrame extends JFrame {
         };
     Thread thread = new Thread(runnable);
     thread.start();
+  }
+
+  public void startHumanSlGameDialog() {
+    if (Lizzie.frame.isContributing) {
+      Utils.showMsg(
+          Lizzie.resourceBundle.getString("Contribute.tips.contributingAndStartAnotherLizzieYzy"));
+      return;
+    }
+    if (humanSlGame != null && !humanSlGame.isFinished()) {
+      humanSlGame.abort();
+      return;
+    }
+    if (EngineManager.isEngineGame
+        || Lizzie.frame.isPlayingAgainstLeelaz
+        || Lizzie.frame.isAnaPlayingAgainstLeelaz) {
+      Utils.showMsg(Lizzie.resourceBundle.getString("LizzieFrame.engineGameStopFirstHint"));
+      return;
+    }
+    if (Lizzie.leelaz != null && Lizzie.leelaz.isPondering()) {
+      Lizzie.leelaz.togglePonder();
+    }
+    NewHumanSlGameDialog dialog = new NewHumanSlGameDialog(this);
+    dialog.setVisible(true);
+    dialog.dispose();
   }
 
   public void startEngineGameDialog() {
@@ -13018,6 +13057,7 @@ public class LizzieFrame extends JFrame {
     appendPlayerStrengthRow(html, Lizzie.resourceBundle.getString("Menu.Black"), report.black);
     appendPlayerStrengthRow(html, Lizzie.resourceBundle.getString("Menu.White"), report.white);
     html.append("</table>");
+    appendPlayerStrengthPhaseSection(html, report);
     appendPlayerStrengthHumanSlSection(html, humanSlReport);
     html.append("<p>")
         .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.note"))
@@ -13052,6 +13092,105 @@ public class LizzieFrame extends JFrame {
         .append(report.medianScoreLossText())
         .append("</td><td>")
         .append(report.averageWinrateLossText())
+        .append("</td><td>")
+        .append(report.percentText(report.mistakeRate))
+        .append("</td></tr>");
+  }
+
+  private void appendPlayerStrengthPhaseSection(
+      StringBuilder html, PlayerStrengthEstimator.Report report) {
+    java.util.List<PlayerStrengthEstimator.Sample> overall =
+        new java.util.ArrayList<PlayerStrengthEstimator.Sample>(report.overall.samples);
+    if (overall.isEmpty()) {
+      return;
+    }
+    html.append("<h3>")
+        .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.phase.title"))
+        .append("</h3>");
+    html.append("<table border='1' cellspacing='0' cellpadding='5'>");
+    html.append("<tr><th>")
+        .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.phase.phase"))
+        .append("</th><th>")
+        .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.side"))
+        .append("</th><th>")
+        .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.estimate"))
+        .append("</th><th>")
+        .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.score"))
+        .append("</th><th>")
+        .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.moves"))
+        .append("</th><th>")
+        .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.firstChoice"))
+        .append("</th><th>")
+        .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.goodMoveRate"))
+        .append("</th><th>")
+        .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.weightedScoreLoss"))
+        .append("</th><th>")
+        .append(Lizzie.resourceBundle.getString("PlayerStrengthEstimate.mistakeRate"))
+        .append("</th></tr>");
+    appendPlayerStrengthPhaseRows(html, "PlayerStrengthEstimate.phase.opening", report, 1, 60);
+    appendPlayerStrengthPhaseRows(html, "PlayerStrengthEstimate.phase.middlegame", report, 61, 150);
+    appendPlayerStrengthPhaseRows(
+        html, "PlayerStrengthEstimate.phase.endgame", report, 151, Integer.MAX_VALUE);
+    html.append("</table>");
+  }
+
+  private void appendPlayerStrengthPhaseRows(
+      StringBuilder html,
+      String phaseKey,
+      PlayerStrengthEstimator.Report report,
+      int minMove,
+      int maxMove) {
+    String phaseName = Lizzie.resourceBundle.getString(phaseKey);
+    appendPlayerStrengthPhaseRow(
+        html,
+        phaseName,
+        Lizzie.resourceBundle.getString("PlayerStrengthEstimate.overall"),
+        filterPlayerStrengthPhase(report.overall, minMove, maxMove));
+    appendPlayerStrengthPhaseRow(
+        html,
+        phaseName,
+        Lizzie.resourceBundle.getString("Menu.Black"),
+        filterPlayerStrengthPhase(report.black, minMove, maxMove));
+    appendPlayerStrengthPhaseRow(
+        html,
+        phaseName,
+        Lizzie.resourceBundle.getString("Menu.White"),
+        filterPlayerStrengthPhase(report.white, minMove, maxMove));
+  }
+
+  private static PlayerStrengthEstimator.SideReport filterPlayerStrengthPhase(
+      PlayerStrengthEstimator.SideReport sideReport, int minMove, int maxMove) {
+    java.util.List<PlayerStrengthEstimator.Sample> phaseSamples =
+        new java.util.ArrayList<PlayerStrengthEstimator.Sample>();
+    for (PlayerStrengthEstimator.Sample sample : sideReport.samples) {
+      if (sample.moveNumber >= minMove && sample.moveNumber <= maxMove) {
+        phaseSamples.add(sample);
+      }
+    }
+    return PlayerStrengthEstimator.summarizeSamples(phaseSamples);
+  }
+
+  private void appendPlayerStrengthPhaseRow(
+      StringBuilder html,
+      String phaseName,
+      String side,
+      PlayerStrengthEstimator.SideReport report) {
+    html.append("<tr><td>")
+        .append(phaseName)
+        .append("</td><td>")
+        .append(side)
+        .append("</td><td>")
+        .append(report.strengthBand)
+        .append("</td><td>")
+        .append(report.hasSamples() ? report.qualityScoreText() : "-")
+        .append("</td><td>")
+        .append(report.sampleCount)
+        .append("</td><td>")
+        .append(report.percentText(report.firstChoiceRate))
+        .append("</td><td>")
+        .append(report.percentText(report.goodMoveRate))
+        .append("</td><td>")
+        .append(report.hasSamples() ? report.weightedScoreLossText() : "-")
         .append("</td><td>")
         .append(report.percentText(report.mistakeRate))
         .append("</td></tr>");

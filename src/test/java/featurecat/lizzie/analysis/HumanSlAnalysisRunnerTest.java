@@ -225,6 +225,63 @@ class HumanSlAnalysisRunnerTest {
     assertFalse(runner.isStarted());
   }
 
+  @Test
+  void argmaxPolicyMove_picksHighestProbabilityForEachPolicyShape() throws Exception {
+    try (TestEnvironment env = TestEnvironment.open()) {
+      JSONObject objectPolicy = new JSONObject().put("A3", 0.1).put("B2", 0.7).put("C1", 0.2);
+      assertEquals(
+          "B2", HumanSlAnalysisRunner.argmaxPolicyMove(objectPolicy, BOARD_SIZE, BOARD_SIZE));
+
+      JSONArray pairPolicy =
+          new JSONArray()
+              .put(new JSONArray().put("A3").put(0.2))
+              .put(new JSONArray().put("C1").put(0.8));
+      assertEquals(
+          "C1", HumanSlAnalysisRunner.argmaxPolicyMove(pairPolicy, BOARD_SIZE, BOARD_SIZE));
+
+      JSONArray numericPolicy = new JSONArray();
+      for (int i = 0; i < BOARD_AREA + 1; i++) {
+        numericPolicy.put(0.0);
+      }
+      numericPolicy.put(Board.getIndex(0, 0), 0.9);
+      assertEquals(
+          "A3", HumanSlAnalysisRunner.argmaxPolicyMove(numericPolicy, BOARD_SIZE, BOARD_SIZE));
+
+      JSONArray passPolicy = new JSONArray();
+      for (int i = 0; i < BOARD_AREA + 1; i++) {
+        passPolicy.put(0.0);
+      }
+      passPolicy.put(BOARD_AREA, 0.95);
+      assertEquals(
+          "pass", HumanSlAnalysisRunner.argmaxPolicyMove(passPolicy, BOARD_SIZE, BOARD_SIZE));
+    }
+  }
+
+  @Test
+  void bestHumanMove_returnsArgmaxOfHumanPolicy() throws Exception {
+    try (TestEnvironment env = TestEnvironment.open()) {
+      BoardHistoryList history = new BoardHistoryList(BoardData.empty(BOARD_SIZE, BOARD_SIZE));
+      boardWithHistory(history);
+      FakeProcess process =
+          new FakeProcess(
+              request -> {
+                JSONObject policy = new JSONObject().put("A3", 0.1).put("B2", 0.8);
+                return new JSONObject()
+                    .put("id", request.getString("id"))
+                    .put("rootInfo", new JSONObject().put("humanPolicy", policy));
+              });
+      HumanSlAnalysisRunner runner =
+          new HumanSlAnalysisRunner(List.of("katago", "analysis"), ignored -> process);
+
+      java.util.Optional<String> best =
+          runner.bestHumanMove(history.getCurrentHistoryNode(), "rank_3k", Duration.ofSeconds(1));
+
+      assertTrue(best.isPresent());
+      assertEquals("B2", best.get());
+      runner.close();
+    }
+  }
+
   private static Board boardWithHistory(BoardHistoryList history) throws Exception {
     Board board = allocate(Board.class);
     board.startStonelist = new ArrayList<>();
