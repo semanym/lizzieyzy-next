@@ -99,6 +99,8 @@ import org.json.JSONObject;
 
 /** The window used to display the game. */
 public class LizzieFrame extends JFrame {
+  private static final Map<String, BufferedImage> PLAYER_STRENGTH_IMAGE_CACHE = new HashMap<>();
+
   private String[] commands = {
     Lizzie.resourceBundle.getString("LizzieFrame.commands.keySpace"),
     Lizzie.resourceBundle.getString("LizzieFrame.commands.keyN"),

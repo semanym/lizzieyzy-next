@@ -3479,6 +3479,495 @@ def build_next_2026_06_01_2_notes(
     ) + '\n'
 
 
+def build_next_2026_06_06_1_notes(
+    asset_map: dict[str, str | None],
+    bundle: dict[str, str],
+    repo: str,
+    release_tag: str | None,
+) -> str:
+    assets_cn = {key: format_asset(asset_map[key], repo, release_tag) for key in asset_map}
+    assets = {key: format_asset_en(asset_map[key], repo, release_tag) for key in asset_map}
+    katago_version = bundle['katago_version']
+    model_source = bundle['model_source']
+    content = [
+        {
+            'language': '中文',
+            'labels': 'zh',
+            'intro': '这是一个面向真实使用反馈的稳定性修复版。重点修复两个会直接影响复盘体验的问题：加载棋谱后当前引擎贴目不再被棋谱默认 `KM[7.5]` 覆盖；鼠标连续悬停同一个候选选点时，棋盘上的棋子不再短暂消失。',
+            'updates_heading': '本版主要更新',
+            'updates': [
+                '修复加载 SGF、GIB、在线棋谱后，当前引擎贴目被棋谱 `KM[7.5]` 覆盖的问题。',
+                '棋谱里的贴目仍会保留在棋谱信息里显示，但不会再擅自改掉用户当前引擎的贴目设置。',
+                '修复鼠标连续停在同一个候选选点时，主棋盘棋子可能短暂消失的渲染问题。',
+                '弈客直播同步现在会保留已有分析数据，并在后台补齐主线缺失的胜率和目差曲线。',
+                '改进 KataGo 临时局面恢复逻辑，snapshot SGF 会使用当前引擎贴目，避免 `loadsgf` 间接重置贴目。',
+                '发布前已通过全量测试、打包、本机启动冒烟和四个平台 release workflow。',
+            ],
+            'before_heading': '下载前先看这几句',
+            'before': [
+                f'Windows 普通用户优先下载 {{windows_opencl_portable}}，这是 **OpenCL 版（推荐，免安装）**。',
+                f'如果 OpenCL 在你的电脑上不稳定，再改用 {{windows_portable}}。',
+                f'如果你的电脑是 **英伟达显卡**，优先下载 {{windows_nvidia_portable}}。',
+                f'主推荐整合包已内置 KataGo `{katago_version}` 和默认权重 `{model_source}`。',
+                '如果你更喜欢安装流程，再选同系列的 `installer.exe`。',
+            ],
+            'download_heading': '下载建议',
+            'download_headers': ('你的电脑', '直接下载这个'),
+            'why_heading': '这一版为什么值得更新',
+            'why': [
+                '加载棋谱后，用户在引擎设置里选择的贴目会继续生效，不会被棋谱默认值悄悄改掉。',
+                '候选点预览更稳定，连续看同一个选点时棋盘不会出现棋子消失这种明显干扰。',
+                '弈客直播不再只停留在当前胜率/目差摘要，开启自动快速分析时会逐步补齐全盘曲线。',
+                '这版是针对复盘和分析基础体验的稳定性修复，建议替换上一版继续使用。',
+            ],
+            'contact_heading': '交流',
+            'contact': ['QQ 群：`299419120`'],
+        },
+        {
+            'language': '繁體中文',
+            'labels': 'zh_hant',
+            'intro': '這是一個面向真實使用回饋的穩定性修復版。重點修復兩個會直接影響復盤體驗的問題：載入棋譜後目前引擎貼目不再被棋譜預設 `KM[7.5]` 覆蓋；滑鼠連續停在同一個候選點時，棋盤上的棋子不再短暫消失。',
+            'updates_heading': '本版主要更新',
+            'updates': [
+                '修復載入 SGF、GIB、線上棋譜後，目前引擎貼目被棋譜 `KM[7.5]` 覆蓋的問題。',
+                '棋譜裡的貼目仍會保留在棋譜資訊中顯示，但不會再擅自改掉使用者目前引擎的貼目設定。',
+                '修復滑鼠連續停在同一個候選點時，主棋盤棋子可能短暫消失的渲染問題。',
+                '弈客直播同步現在會保留已有分析資料，並在背景補齊主線缺失的勝率和目差曲線。',
+                '改進 KataGo 臨時局面恢復邏輯，snapshot SGF 會使用目前引擎貼目，避免 `loadsgf` 間接重置貼目。',
+                '發布前已通過完整測試、打包、本機啟動冒煙和四個平台 release workflow。',
+            ],
+            'before_heading': '下載前先看這幾句',
+            'before': [
+                f'Windows 一般使用者優先下載 {{windows_opencl_portable}}，這是 **OpenCL 版（推薦，免安裝）**。',
+                f'如果 OpenCL 在你的電腦上不穩定，再改用 {{windows_portable}}。',
+                f'如果你的電腦是 **NVIDIA 顯示卡**，優先下載 {{windows_nvidia_portable}}。',
+                f'主推薦整合包已內建 KataGo `{katago_version}` 和預設權重 `{model_source}`。',
+                '如果你更喜歡安裝流程，再選同系列的 `installer.exe`。',
+            ],
+            'download_heading': '下載建議',
+            'download_headers': ('你的電腦', '直接下載這個'),
+            'why_heading': '這一版為什麼值得更新',
+            'why': [
+                '載入棋譜後，使用者在引擎設定裡選擇的貼目會繼續生效，不會被棋譜預設值悄悄改掉。',
+                '候選點預覽更穩定，連續看同一個選點時棋盤不會出現棋子消失這種明顯干擾。',
+                '弈客直播不再只停留在目前勝率/目差摘要，開啟自動快速分析時會逐步補齊全盤曲線。',
+                '這版是針對復盤和分析基礎體驗的穩定性修復，建議替換上一版繼續使用。',
+            ],
+            'contact_heading': '交流',
+            'contact': ['QQ 群：`299419120`'],
+        },
+        {
+            'language': 'English',
+            'labels': 'en',
+            'intro': 'This is a stability-focused update based on real user feedback. It fixes two issues that directly affected review quality: loading a kifu no longer overwrites the current engine komi with the game file `KM[7.5]`, and repeatedly hovering the same candidate move no longer makes board stones briefly disappear.',
+            'updates_heading': 'Release Highlights',
+            'updates': [
+                'Fixed SGF, GIB, and online kifu loading so game-file `KM[7.5]` no longer overwrites the current engine komi.',
+                'The kifu komi is still preserved in game information for display, but it no longer silently changes the user’s active engine setting.',
+                'Fixed a board rendering issue where stones could briefly disappear when hovering the same candidate move repeatedly.',
+                'Yike live sync now preserves existing analysis data and completes missing mainline winrate/score curves in the background.',
+                'Improved KataGo temporary position restore so snapshot SGF uses the current engine komi and does not indirectly reset komi through `loadsgf`.',
+                'Before release, full tests, packaging, a local launch smoke test, and all four platform release workflows passed.',
+            ],
+            'before_heading': 'Read Before Downloading',
+            'before': [
+                f'Most Windows users should download {{windows_opencl_portable}}, the **recommended no-install OpenCL build**.',
+                f'If OpenCL is unreliable on your PC, use {{windows_portable}} instead.',
+                f'If your PC has an **NVIDIA GPU**, try {{windows_nvidia_portable}} first.',
+                f'The recommended bundles include KataGo `{katago_version}` and the default weight `{model_source}`.',
+                'If you prefer an installer, choose the matching `installer.exe` package.',
+            ],
+            'download_heading': 'Download Guide',
+            'download_headers': ('Your computer', 'Download this file'),
+            'why_heading': 'Why Update',
+            'why': [
+                'After loading a kifu, the komi chosen in engine settings stays active instead of being silently replaced by the game-file default.',
+                'Candidate-move preview is more stable, and reviewing the same suggestion repeatedly no longer causes visible board flicker or missing stones.',
+                'Yike live games no longer stay limited to the current winrate/score summary; with auto quick analysis enabled, the full-game curves are filled in progressively.',
+                'This is a focused stability update for core review and analysis behavior, recommended over the previous build.',
+            ],
+            'contact_heading': 'Contact',
+            'contact': ['QQ group: `299419120`'],
+        },
+        {
+            'language': '日本語',
+            'labels': 'ja',
+            'intro': 'これは実際の利用フィードバックに基づく安定性修正版です。復盤体験に直接影響する 2 点を修正しました。棋譜を読み込んでも現在のエンジンコミが棋譜の `KM[7.5]` で上書きされず、同じ候補手に連続してマウスを置いても盤上の石が一時的に消えません。',
+            'updates_heading': '主な更新',
+            'updates': [
+                'SGF、GIB、オンライン棋譜の読み込みで、棋譜の `KM[7.5]` が現在のエンジンコミを上書きする問題を修正しました。',
+                '棋譜内のコミは棋譜情報として表示されますが、ユーザーが使っているエンジン設定を勝手に変更しません。',
+                '同じ候補手にマウスを連続して置いたとき、メイン盤の石が一時的に消えることがある描画問題を修正しました。',
+                '弈客ライブ同期では既存の分析データを保持し、不足している主線の勝率/目差曲線をバックグラウンドで補完します。',
+                'KataGo の一時局面復元を改善し、snapshot SGF は現在のエンジンコミを使うため、`loadsgf` 経由でコミがリセットされにくくなりました。',
+                'リリース前に full test、package、ローカル起動 smoke test、4 プラットフォームの release workflow がすべて通過しました。',
+            ],
+            'before_heading': 'ダウンロード前に',
+            'before': [
+                f'多くの Windows ユーザーは {{windows_opencl_portable}} を選ぶのがおすすめです。これは **推奨 OpenCL 版、インストール不要** です。',
+                f'OpenCL が不安定な場合は {{windows_portable}} を使ってください。',
+                f'**NVIDIA GPU** 搭載 PC では {{windows_nvidia_portable}} を優先してください。',
+                f'推奨バンドルには KataGo `{katago_version}` と既定の重み `{model_source}` が含まれています。',
+                'インストーラ形式がよい場合は、同じ系列の `installer.exe` を選んでください。',
+            ],
+            'download_heading': 'ダウンロード案内',
+            'download_headers': ('お使いの環境', 'ダウンロードするファイル'),
+            'why_heading': '更新する理由',
+            'why': [
+                '棋譜を読み込んだ後も、エンジン設定で選んだコミがそのまま有効で、棋譜の既定値に置き換わりません。',
+                '候補手プレビューが安定し、同じ候補手を繰り返し見ても盤上の石が消えるような表示乱れが起きにくくなりました。',
+                '弈客ライブは現在局面の勝率/目差だけでなく、自動クイック分析が有効な場合に全局曲線を段階的に補完します。',
+                '復盤と分析の基本動作を直す安定性更新なので、前回ビルドからの更新をおすすめします。',
+            ],
+            'contact_heading': '連絡先',
+            'contact': ['QQ グループ: `299419120`'],
+        },
+        {
+            'language': '한국어',
+            'labels': 'ko',
+            'intro': '이번 버전은 실제 사용자 피드백을 바탕으로 한 안정성 수정판입니다. 복기 경험에 직접 영향을 주는 두 문제를 고쳤습니다. 기보를 불러와도 현재 엔진 덤이 기보의 `KM[7.5]` 로 덮어써지지 않고, 같은 후보수에 마우스를 반복해서 올려도 보드의 돌이 잠깐 사라지지 않습니다.',
+            'updates_heading': '주요 업데이트',
+            'updates': [
+                'SGF, GIB, 온라인 기보를 불러올 때 기보의 `KM[7.5]` 가 현재 엔진 덤을 덮어쓰는 문제를 수정했습니다.',
+                '기보 안의 덤은 게임 정보 표시용으로 유지되지만, 사용자의 현재 엔진 설정을 조용히 바꾸지 않습니다.',
+                '같은 후보수에 마우스를 반복해서 올릴 때 메인 보드의 돌이 잠깐 사라질 수 있던 렌더링 문제를 수정했습니다.',
+                'Yike live 동기화는 기존 분석 데이터를 보존하고, 메인라인에서 빠진 승률/집 차이 곡선을 백그라운드에서 채웁니다.',
+                'KataGo 임시 포지션 복원 로직을 개선해 snapshot SGF 가 현재 엔진 덤을 사용하고, `loadsgf` 를 통해 덤이 간접적으로 리셋되지 않도록 했습니다.',
+                '릴리스 전에 full test, package, 로컬 실행 smoke test, 4개 플랫폼 release workflow 가 모두 통과했습니다.',
+            ],
+            'before_heading': '다운로드 전 확인',
+            'before': [
+                f'대부분의 Windows 사용자는 {{windows_opencl_portable}} 를 먼저 받으면 됩니다. 이는 **추천 OpenCL 무설치 빌드** 입니다.',
+                f'OpenCL 이 PC에서 불안정하면 {{windows_portable}} 를 대신 사용하세요.',
+                f'**NVIDIA GPU** 가 있다면 {{windows_nvidia_portable}} 를 우선 사용해 보세요.',
+                f'추천 번들에는 KataGo `{katago_version}` 와 기본 가중치 `{model_source}` 가 포함되어 있습니다.',
+                '설치형 흐름을 원한다면 같은 계열의 `installer.exe` 를 고르세요.',
+            ],
+            'download_heading': '다운로드 안내',
+            'download_headers': ('내 컴퓨터', '다운로드할 파일'),
+            'why_heading': '업데이트할 이유',
+            'why': [
+                '기보를 불러온 뒤에도 엔진 설정에서 선택한 덤이 그대로 유지되고, 기보 기본값으로 조용히 바뀌지 않습니다.',
+                '후보수 미리보기가 더 안정적이며, 같은 후보수를 반복해서 볼 때 돌이 사라지는 듯한 표시 문제가 줄었습니다.',
+                'Yike live 는 현재 승률/집 차이 요약에만 머물지 않고, 자동 빠른 분석이 켜져 있으면 전체 곡선을 점진적으로 채웁니다.',
+                '복기와 분석의 기본 동작을 고친 안정성 업데이트라서 이전 빌드보다 권장합니다.',
+            ],
+            'contact_heading': '연락',
+            'contact': ['QQ 그룹: `299419120`'],
+        },
+        {
+            'language': 'ภาษาไทย',
+            'labels': 'th',
+            'intro': 'รีลีสนี้เป็นรุ่นแก้ความเสถียรจาก feedback การใช้งานจริง โดยแก้สองปัญหาที่กระทบการรีวิวเกมโดยตรง: โหลด kifu แล้วค่า komi ของ engine ปัจจุบันจะไม่ถูก `KM[7.5]` ในไฟล์ทับ และเมื่อ hover candidate move เดิมซ้ำ ๆ หินบนกระดานจะไม่หายไปชั่วคราว',
+            'updates_heading': 'อัปเดตหลัก',
+            'updates': [
+                'แก้ปัญหาโหลด SGF, GIB และ kifu ออนไลน์แล้ว `KM[7.5]` ในไฟล์ไปทับค่า komi ของ engine ปัจจุบัน',
+                'ค่า komi ใน kifu ยังแสดงในข้อมูลเกมตามเดิม แต่จะไม่เปลี่ยนค่าที่ผู้ใช้ตั้งไว้ใน engine อย่างเงียบ ๆ',
+                'แก้ปัญหา render ที่ทำให้หินบนกระดานหลักอาจหายไปชั่วคราวเมื่อ hover candidate move เดิมซ้ำ ๆ',
+                'Yike live sync จะเก็บข้อมูลวิเคราะห์ที่มีอยู่ และเติมกราฟ winrate/score ของ mainline ที่ยังขาดอยู่แบบ background',
+                'ปรับปรุงการ restore ตำแหน่งชั่วคราวของ KataGo ให้ snapshot SGF ใช้ komi ของ engine ปัจจุบัน ลดการ reset ผ่าน `loadsgf`',
+                'ก่อน release ได้ผ่าน full test, package, local launch smoke test และ release workflow ครบทั้ง 4 platform',
+            ],
+            'before_heading': 'ก่อนดาวน์โหลด',
+            'before': [
+                f'ผู้ใช้ Windows ส่วนใหญ่แนะนำให้ดาวน์โหลด {{windows_opencl_portable}} ซึ่งเป็น **OpenCL รุ่นแนะนำ แบบไม่ต้องติดตั้ง**',
+                f'ถ้า OpenCL ไม่เสถียรบนเครื่องของคุณ ให้ใช้ {{windows_portable}} แทน',
+                f'ถ้ามี **NVIDIA GPU** แนะนำให้ลอง {{windows_nvidia_portable}} ก่อน',
+                f'แพ็กเกจหลักมี KataGo `{katago_version}` และน้ำหนักเริ่มต้น `{model_source}` มาให้แล้ว',
+                'ถ้าต้องการแบบติดตั้ง ให้เลือกไฟล์ `installer.exe` ในชุดเดียวกัน',
+            ],
+            'download_heading': 'แนะนำการดาวน์โหลด',
+            'download_headers': ('เครื่องของคุณ', 'ดาวน์โหลดไฟล์นี้'),
+            'why_heading': 'ทำไมควรอัปเดต',
+            'why': [
+                'หลังโหลด kifu ค่า komi ที่เลือกใน engine settings จะยังคงอยู่ ไม่ถูกค่า default ในไฟล์เปลี่ยนเอง',
+                'การ preview candidate move เสถียรขึ้น และการดูคำแนะนำเดิมซ้ำ ๆ จะไม่ทำให้เห็นหินหายหรือกระพริบอย่างรบกวน',
+                'Yike live จะไม่แสดงแค่ winrate/score ปัจจุบันเท่านั้น หากเปิด auto quick analysis ระบบจะค่อย ๆ เติมกราฟทั้งเกมให้ครบ',
+                'เป็นรุ่นแก้เสถียรภาพของ flow รีวิวและวิเคราะห์หลัก จึงแนะนำให้อัปเดตจาก build ก่อนหน้า',
+            ],
+            'contact_heading': 'ติดต่อ',
+            'contact': ['QQ group: `299419120`'],
+        },
+    ]
+    sections: list[dict[str, object]] = []
+    for block in content:
+        localized_assets = assets_cn if block['language'] in ('中文', '繁體中文') else assets
+        before_items = [
+            item.format(
+                windows_opencl_portable=localized_assets['windows_opencl_portable'],
+                windows_portable=localized_assets['windows_portable'],
+                windows_nvidia_portable=localized_assets['windows_nvidia_portable'],
+            )
+            for item in block['before']
+        ]
+        sections.append(
+            {
+                'language': block['language'],
+                'intro': block['intro'],
+                'updates': {'heading': block['updates_heading'], 'items': block['updates']},
+                'before': {'heading': block['before_heading'], 'items': before_items},
+                'download': {
+                    'heading': block['download_heading'],
+                    'headers': block['download_headers'],
+                    'rows': standard_download_rows(STANDARD_DOWNLOAD_LABELS[block['labels']], localized_assets),
+                },
+                'why': {'heading': block['why_heading'], 'items': block['why']},
+                'contact': {'heading': block['contact_heading'], 'items': block['contact']},
+            }
+        )
+    add_nvidia50_download_rows(sections, assets_cn, assets)
+    add_tensorrt_split_download_row(sections, assets_cn, assets, asset_map)
+    validate_release_sections(sections)
+    return release_heading(release_tag) + '\n\n' + '\n\n---\n\n'.join(
+        render_language_section(section) for section in sections
+    ) + '\n'
+
+
+def build_next_2026_06_08_1_notes(
+    asset_map: dict[str, str | None],
+    bundle: dict[str, str],
+    repo: str,
+    release_tag: str | None,
+) -> str:
+    assets_cn = {key: format_asset(asset_map[key], repo, release_tag) for key in asset_map}
+    assets = {key: format_asset_en(asset_map[key], repo, release_tag) for key in asset_map}
+    katago_version = bundle['katago_version']
+    model_source = bundle['model_source']
+    content = [
+        {
+            'language': '中文',
+            'labels': 'zh',
+            'intro': '这是棋力评估体验预览版。重点把“棋力评估 / 吻合度”从偏工程化的详细表格，改成普通棋友更容易看懂的卡片式展示；详细数据仍然保留，方便需要完整指标的用户继续查看。',
+            'updates_heading': '本版主要更新',
+            'updates': [
+                '重做“棋力评估”弹窗，主界面改成现代卡片式布局，不再像旧版指标表格那样拥挤。',
+                '“测评”页只展示黑棋和白棋表现，不再在主视图显示合计棋力，避免误导普通用户。',
+                '棋力区间改成人能看懂的中文格式，例如 `业余1级-2级`、`业余1段-2段`。',
+                '“吻合度”页改成黑白双方卡片、走势曲线和建议复查区间，只提示复盘重点，不做作弊结论。',
+                '每个页面右上角保留“详细数据”，点击后仍可打开旧版完整指标表和详细图表。',
+                '分析工具栏新增短按钮“棋力评估”，放在腾讯棋谱旁边，日常复盘更容易找到。',
+            ],
+            'before_heading': '下载前先看这几句',
+            'before': [
+                '这是 pre-release 预览版，适合想先体验新版棋力评估 UI 的用户。',
+                f'主推荐整合包继续内置 KataGo `{katago_version}` 和默认权重 `{model_source}`。',
+                f'Windows 普通用户优先下载 {{windows_opencl_portable}}，这是 **OpenCL 版（推荐，免安装）**。',
+                f'如果 OpenCL 在你的电脑上不稳定，再改用 {{windows_portable}}。',
+                f'如果你的电脑是 **英伟达显卡**，优先下载 {{windows_nvidia_portable}}。',
+            ],
+            'download_heading': '下载建议',
+            'download_headers': ('你的电脑', '直接下载这个'),
+            'why_heading': '这一版为什么值得试用',
+            'why': [
+                '普通用户打开棋力评估后，先看到的是黑棋和白棋表现卡片，而不是一大堆看不懂的表格。',
+                '业余级、业余段的显示更符合中文围棋用户习惯，减少 `1-2k` 这类英文缩写带来的理解成本。',
+                '吻合度页面更适合复盘：突出双方数据、走势和建议复查区间，不制造过度判断。',
+                '这次只优化展示和入口，不改变棋力评估算法，旧版详细数据也没有被删除。',
+            ],
+            'contact_heading': '交流',
+            'contact': ['QQ 群：`299419120`'],
+        },
+        {
+            'language': '繁體中文',
+            'labels': 'zh_hant',
+            'intro': '這是棋力評估體驗預覽版。重點把「棋力評估 / 吻合度」從偏工程化的詳細表格，改成一般棋友更容易看懂的卡片式展示；詳細資料仍然保留，方便需要完整指標的使用者繼續查看。',
+            'updates_heading': '本版主要更新',
+            'updates': [
+                '重做「棋力評估」視窗，主介面改成現代卡片式布局，不再像舊版指標表格那樣擁擠。',
+                '「測評」頁只展示黑棋和白棋表現，不再在主視圖顯示合計棋力，避免誤導一般使用者。',
+                '棋力區間改成人能看懂的中文格式，例如 `業餘1級-2級`、`業餘1段-2段`。',
+                '「吻合度」頁改成黑白雙方卡片、走勢曲線和建議複查區間，只提示復盤重點，不做作弊結論。',
+                '每個頁面右上角保留「詳細資料」，點擊後仍可開啟舊版完整指標表和詳細圖表。',
+                '分析工具列新增短按鈕「棋力評估」，放在騰訊棋譜旁邊，日常復盤更容易找到。',
+            ],
+            'before_heading': '下載前先看這幾句',
+            'before': [
+                '這是 pre-release 預覽版，適合想先體驗新版棋力評估 UI 的使用者。',
+                f'主推薦整合包繼續內建 KataGo `{katago_version}` 和預設權重 `{model_source}`。',
+                f'Windows 一般使用者優先下載 {{windows_opencl_portable}}，這是 **OpenCL 版（推薦，免安裝）**。',
+                f'如果 OpenCL 在你的電腦上不穩定，再改用 {{windows_portable}}。',
+                f'如果你的電腦是 **NVIDIA 顯示卡**，優先下載 {{windows_nvidia_portable}}。',
+            ],
+            'download_heading': '下載建議',
+            'download_headers': ('你的電腦', '直接下載這個'),
+            'why_heading': '這一版為什麼值得試用',
+            'why': [
+                '一般使用者打開棋力評估後，先看到的是黑棋和白棋表現卡片，而不是一大堆看不懂的表格。',
+                '業餘級、業餘段的顯示更符合中文圍棋使用者習慣，減少 `1-2k` 這類英文縮寫帶來的理解成本。',
+                '吻合度頁面更適合復盤：突出雙方資料、走勢和建議複查區間，不製造過度判斷。',
+                '這次只優化展示和入口，不改變棋力評估演算法，舊版詳細資料也沒有被刪除。',
+            ],
+            'contact_heading': '交流',
+            'contact': ['QQ 群：`299419120`'],
+        },
+        {
+            'language': 'English',
+            'labels': 'en',
+            'intro': 'This is a preview build for the player strength UI. The Strength / Match views have been redesigned from dense engineering-style tables into clearer cards for everyday reviewers, while the full detailed data remains available for advanced users.',
+            'updates_heading': 'Release Highlights',
+            'updates': [
+                'Redesigned the Player Strength dialog with a modern card-based main view instead of the crowded legacy metrics table.',
+                'The Assessment page now focuses on Black and White only; the combined strength summary is no longer shown in the main view.',
+                'Rank ranges are displayed in friendlier localized wording, such as amateur kyu and amateur dan ranges.',
+                'The Match page now shows Black/White cards, a trend chart, and suggested review intervals without making cheating conclusions.',
+                'Each page keeps a Detail Data entry in the top-right corner, opening the previous full metrics table or detailed chart.',
+                'Added a short Strength button next to the Tencent Kifu entry on the analysis toolbar.',
+            ],
+            'before_heading': 'Read Before Downloading',
+            'before': [
+                'This is a pre-release preview for users who want to try the new Player Strength UI early.',
+                f'The recommended bundles continue to include KataGo `{katago_version}` and the default weight `{model_source}`.',
+                f'Most Windows users should download {{windows_opencl_portable}}, the **recommended no-install OpenCL build**.',
+                f'If OpenCL is unreliable on your PC, use {{windows_portable}} instead.',
+                f'If your PC has an **NVIDIA GPU**, try {{windows_nvidia_portable}} first.',
+            ],
+            'download_heading': 'Download Guide',
+            'download_headers': ('Your computer', 'Download this file'),
+            'why_heading': 'Why Try This Build',
+            'why': [
+                'The first view now explains Black and White performance directly instead of starting with a hard-to-read metrics table.',
+                'Localized amateur kyu/dan wording is easier for Chinese Go users to understand than raw `1-2k` style labels.',
+                'The Match view is better suited for review: it highlights both players, trend, and suggested intervals without overclaiming.',
+                'This release changes presentation and entry points only; the strength estimation algorithm and legacy detail view remain available.',
+            ],
+            'contact_heading': 'Contact',
+            'contact': ['QQ group: `299419120`'],
+        },
+        {
+            'language': '日本語',
+            'labels': 'ja',
+            'intro': 'これは棋力評価 UI のプレビュー版です。「棋力評価 / 一致度」を、開発者向けの細かい表から、普段の復盤で見やすいカード形式に刷新しました。詳細データは従来どおり残しています。',
+            'updates_heading': '主な更新',
+            'updates': [
+                '「棋力評価」ダイアログを刷新し、旧来の詰まった指標表ではなく、カード形式のメイン画面にしました。',
+                '「評価」ページは黒番と白番の表示に絞り、メイン画面では合計棋力を表示しないようにしました。',
+                '棋力レンジは、級位・段位として読みやすい表現にしました。',
+                '「一致度」ページは黒白のカード、推移グラフ、見直し候補区間を表示し、不正判定のような結論は出しません。',
+                '各ページ右上に「詳細データ」を残し、従来の詳細指標表や詳細グラフを開けます。',
+                '分析ツールバーの Tencent 棋譜の横に、短い「棋力評価」ボタンを追加しました。',
+            ],
+            'before_heading': 'ダウンロード前に',
+            'before': [
+                'これは新しい棋力評価 UI を先に試したいユーザー向けの pre-release です。',
+                f'推奨バンドルには KataGo `{katago_version}` と既定の重み `{model_source}` が含まれています。',
+                f'多くの Windows ユーザーは {{windows_opencl_portable}} を選ぶのがおすすめです。これは **推奨 OpenCL 版、インストール不要** です。',
+                f'OpenCL が不安定な場合は {{windows_portable}} を使ってください。',
+                f'**NVIDIA GPU** 搭載 PC では {{windows_nvidia_portable}} を優先してください。',
+            ],
+            'download_heading': 'ダウンロード案内',
+            'download_headers': ('お使いの環境', 'ダウンロードするファイル'),
+            'why_heading': 'このビルドを試す理由',
+            'why': [
+                '棋力評価を開いたとき、まず黒番と白番のパフォーマンスが見え、難しい表から読み解く必要がありません。',
+                '級位・段位の表示により、`1-2k` のような略記より直感的に理解できます。',
+                '一致度ページは復盤向けに、双方のデータ、推移、見直し候補区間を示し、過度な判断を避けます。',
+                '今回は表示と入口の改善だけで、棋力評価アルゴリズムや従来の詳細画面は変更していません。',
+            ],
+            'contact_heading': '連絡先',
+            'contact': ['QQ グループ: `299419120`'],
+        },
+        {
+            'language': '한국어',
+            'labels': 'ko',
+            'intro': '이번 버전은 기력 평가 UI 프리뷰 빌드입니다. Strength / Match 화면을 촘촘한 엔지니어링식 표에서 일반 복기 사용자가 보기 쉬운 카드형 화면으로 바꾸었고, 전체 상세 데이터는 그대로 남겼습니다.',
+            'updates_heading': '주요 업데이트',
+            'updates': [
+                'Player Strength 창을 현대적인 카드형 메인 화면으로 다시 만들었습니다. 이전처럼 지표 표가 빽빽하게 보이지 않습니다.',
+                'Assessment 페이지는 흑과 백의 성과만 보여 주며, 메인 화면에서 합산 기력은 표시하지 않습니다.',
+                '기력 구간은 아마 급/단 범위처럼 더 이해하기 쉬운 표현으로 표시합니다.',
+                'Match 페이지는 흑/백 카드, 추세 그래프, 복기 추천 구간을 보여 주며 부정행위 결론을 내리지 않습니다.',
+                '각 페이지 오른쪽 위에 Detail Data 진입점을 남겨 기존 전체 지표 표와 상세 그래프를 열 수 있습니다.',
+                '분석 툴바의 Tencent 기보 옆에 짧은 Strength 버튼을 추가했습니다.',
+            ],
+            'before_heading': '다운로드 전 확인',
+            'before': [
+                '새 Player Strength UI 를 먼저 써 보고 싶은 사용자를 위한 pre-release 프리뷰입니다.',
+                f'추천 번들에는 KataGo `{katago_version}` 와 기본 가중치 `{model_source}` 가 포함되어 있습니다.',
+                f'대부분의 Windows 사용자는 {{windows_opencl_portable}} 를 먼저 받으면 됩니다. 이는 **추천 OpenCL 무설치 빌드** 입니다.',
+                f'OpenCL 이 PC에서 불안정하면 {{windows_portable}} 를 대신 사용하세요.',
+                f'**NVIDIA GPU** 가 있다면 {{windows_nvidia_portable}} 를 우선 사용해 보세요.',
+            ],
+            'download_heading': '다운로드 안내',
+            'download_headers': ('내 컴퓨터', '다운로드할 파일'),
+            'why_heading': '이 빌드를 써 볼 이유',
+            'why': [
+                '기력 평가를 열면 어려운 표가 아니라 흑과 백의 성과 카드부터 볼 수 있습니다.',
+                '아마 급/단 표시가 `1-2k` 같은 축약 표기보다 이해하기 쉽습니다.',
+                'Match 화면은 복기에 맞게 양쪽 데이터, 추세, 추천 확인 구간을 보여 주고 과도한 판단은 피합니다.',
+                '이번 변경은 표시와 진입점만 바꾸며, 기력 평가 알고리즘과 기존 상세 화면은 그대로 유지합니다.',
+            ],
+            'contact_heading': '연락',
+            'contact': ['QQ 그룹: `299419120`'],
+        },
+        {
+            'language': 'ภาษาไทย',
+            'labels': 'th',
+            'intro': 'รีลีสนี้เป็น preview ของ UI ประเมินฝีมือผู้เล่น โดยเปลี่ยน Strength / Match จากตารางละเอียดแบบวิศวกรรมให้เป็นการ์ดที่อ่านง่ายขึ้นสำหรับการรีวิวเกมทั่วไป และยังคงหน้า detailed data เดิมไว้สำหรับผู้ใช้ขั้นสูง',
+            'updates_heading': 'อัปเดตหลัก',
+            'updates': [
+                'ปรับหน้าต่าง Player Strength ใหม่เป็นหน้าหลักแบบ card layout แทนตาราง metric เดิมที่แน่นเกินไป',
+                'หน้า Assessment แสดงเฉพาะฝั่งดำและขาว ไม่แสดง combined strength ในหน้าหลัก',
+                'ช่วงระดับฝีมือแสดงด้วยคำที่เข้าใจง่ายขึ้น เช่น amateur kyu / amateur dan range',
+                'หน้า Match แสดงการ์ดดำ/ขาว กราฟแนวโน้ม และช่วงที่แนะนำให้กลับไปตรวจ โดยไม่สรุปว่าโกง',
+                'แต่ละหน้ามีปุ่ม Detail Data มุมขวาบน เพื่อเปิดตาราง metric หรือกราฟละเอียดแบบเดิม',
+                'เพิ่มปุ่ม Strength แบบสั้นใน toolbar ถัดจาก Tencent Kifu',
+            ],
+            'before_heading': 'ก่อนดาวน์โหลด',
+            'before': [
+                'นี่เป็น pre-release สำหรับผู้ใช้ที่ต้องการลอง UI ประเมินฝีมือแบบใหม่ก่อน',
+                f'แพ็กเกจหลักมี KataGo `{katago_version}` และน้ำหนักเริ่มต้น `{model_source}` มาให้แล้ว',
+                f'ผู้ใช้ Windows ส่วนใหญ่แนะนำให้ดาวน์โหลด {{windows_opencl_portable}} ซึ่งเป็น **OpenCL รุ่นแนะนำ แบบไม่ต้องติดตั้ง**',
+                f'ถ้า OpenCL ไม่เสถียรบนเครื่องของคุณ ให้ใช้ {{windows_portable}} แทน',
+                f'ถ้ามี **NVIDIA GPU** แนะนำให้ลอง {{windows_nvidia_portable}} ก่อน',
+            ],
+            'download_heading': 'แนะนำการดาวน์โหลด',
+            'download_headers': ('เครื่องของคุณ', 'ดาวน์โหลดไฟล์นี้'),
+            'why_heading': 'ทำไมควรลอง build นี้',
+            'why': [
+                'เมื่อเปิดการประเมินฝีมือ จะเห็นการ์ดผลงานของดำและขาวก่อน ไม่ต้องเริ่มจากตารางที่อ่านยาก',
+                'การแสดงระดับแบบ amateur kyu/dan เข้าใจง่ายกว่า label แบบ `1-2k`',
+                'หน้า Match เหมาะกับการรีวิวมากขึ้น เพราะเน้นข้อมูลสองฝั่ง แนวโน้ม และช่วงที่ควรตรวจ ไม่ตัดสินเกินจริง',
+                'รุ่นนี้ปรับเฉพาะการแสดงผลและตำแหน่งปุ่ม ไม่เปลี่ยนอัลกอริทึมประเมินฝีมือ และยังเก็บ detail view เดิมไว้',
+            ],
+            'contact_heading': 'ติดต่อ',
+            'contact': ['QQ group: `299419120`'],
+        },
+    ]
+
+    sections: list[dict[str, object]] = []
+    for block in content:
+        localized_assets = assets_cn if block['language'] in ('中文', '繁體中文') else assets
+        before_items = [
+            item.format(
+                windows_opencl_portable=localized_assets['windows_opencl_portable'],
+                windows_portable=localized_assets['windows_portable'],
+                windows_nvidia_portable=localized_assets['windows_nvidia_portable'],
+            )
+            for item in block['before']
+        ]
+        sections.append(
+            {
+                'language': block['language'],
+                'intro': block['intro'],
+                'updates': {'heading': block['updates_heading'], 'items': block['updates']},
+                'before': {'heading': block['before_heading'], 'items': before_items},
+                'download': {
+                    'heading': block['download_heading'],
+                    'headers': block['download_headers'],
+                    'rows': standard_download_rows(STANDARD_DOWNLOAD_LABELS[block['labels']], localized_assets),
+                },
+                'why': {'heading': block['why_heading'], 'items': block['why']},
+                'contact': {'heading': block['contact_heading'], 'items': block['contact']},
+            }
+        )
+    add_nvidia50_download_rows(sections, assets_cn, assets)
+    add_tensorrt_split_download_row(sections, assets_cn, assets, asset_map)
+    validate_release_sections(sections)
+    return release_heading(release_tag) + '\n\n' + '\n\n---\n\n'.join(
+        render_language_section(section) for section in sections
+    ) + '\n'
+
+
 def build_release_notes(asset_map: dict[str, str | None], bundle: dict[str, str], repo: str, release_tag: str | None) -> str:
     if release_tag == 'next-2026-05-03.1':
         return build_next_2026_05_03_1_notes(asset_map, repo, release_tag)
@@ -3504,6 +3993,12 @@ def build_release_notes(asset_map: dict[str, str | None], bundle: dict[str, str]
         return build_next_2026_06_01_1_notes(asset_map, bundle, repo, release_tag)
     if release_tag == 'next-2026-06-01.2':
         return build_next_2026_06_01_2_notes(asset_map, bundle, repo, release_tag)
+    if release_tag == 'next-2026-06-06.1':
+        return build_next_2026_06_06_1_notes(asset_map, bundle, repo, release_tag)
+    if release_tag == 'next-2026-06-08.1':
+        return build_next_2026_06_08_1_notes(asset_map, bundle, repo, release_tag)
+    if release_tag == 'next-2026-06-09.1':
+        return build_next_2026_06_09_1_notes(asset_map, bundle, repo, release_tag)
 
     assets_cn = {
         key: format_asset(asset_map[key], repo, release_tag)
@@ -4185,6 +4680,260 @@ def build_next_2026_05_18_1_notes(
     add_nvidia50_download_rows(sections, assets_cn, assets)
     validate_release_sections(sections)
     heading = f'# LizzieYzy Next {release_tag} 4段纪念版更新' if release_tag else '# LizzieYzy Next 4段纪念版更新'
+    return heading + '\n\n' + '\n\n---\n\n'.join(
+        render_language_section(section) for section in sections
+    ) + '\n'
+
+
+def build_next_2026_06_09_1_notes(
+    asset_map: dict[str, str | None],
+    bundle: dict[str, str],
+    repo: str,
+    release_tag: str | None,
+) -> str:
+    assets_cn = {key: format_asset(asset_map[key], repo, release_tag) for key in asset_map}
+    assets = {key: format_asset_en(asset_map[key], repo, release_tag) for key in asset_map}
+    katago_version = bundle['katago_version']
+    model_source = bundle['model_source']
+    sections: list[dict[str, object]] = [
+        {
+            'language': '中文',
+            'intro': '这是棋力评估界面修正版。重点把“测评”和“吻合度”做成更适合普通用户阅读的卡片式界面，并修复真实测试中发现的遮挡、刻度和图标显示问题。',
+            'updates': {
+                'heading': '本版主要更新',
+                'items': [
+                    '重做“棋力评估”主界面，只保留黑棋和白棋表现，默认不再显示普通用户看不懂的合计棋力。',
+                    '“吻合度”改为原始横条风格的选点命中图：上层显示 AI 一选，下层显示好手，鼠标移动到命中点可查看具体手数和损失信息。',
+                    '修复黑棋/白棋统计文字被图表遮挡的问题，右侧概率和说明现在会绘制在上层。',
+                    '修复底部手数刻度显示不全和尾部 `151 154` 这类重复拥挤的问题，尾手会自动替代过近刻度。',
+                    '修复“详细数据”和说明条里的叹号图标裁切问题，并重绘顶部围棋图标，避免左侧出现异常边缘。',
+                    '发布前已重新跑棋力评估回归测试、打包验证，并完成本机真实启动 UI 复测。',
+                ],
+            },
+            'before': {
+                'heading': '下载前先看这几句',
+                'items': [
+                    f'Windows 普通用户优先下载 {assets_cn["windows_opencl_portable"]}，这是 **OpenCL 版（推荐，免安装）**。',
+                    f'如果 OpenCL 在你的电脑上不稳定，再改用 {assets_cn["windows_portable"]}。',
+                    f'如果你的电脑是 **英伟达显卡**，优先下载 {assets_cn["windows_nvidia_portable"]}。',
+                    f'主推荐整合包已内置 KataGo `{katago_version}` 和默认权重 `{model_source}`。',
+                    '如果你更喜欢安装流程，再选同系列的 `installer.exe`。',
+                ],
+            },
+            'download': {
+                'heading': '下载建议',
+                'headers': ('你的电脑', '直接下载这个'),
+                'rows': standard_download_rows(STANDARD_DOWNLOAD_LABELS['zh'], assets_cn),
+            },
+            'why': {
+                'heading': '这一版为什么值得更新',
+                'items': [
+                    '棋力评估不再像调试表格，更接近用户能直接看懂的复盘结果页。',
+                    '吻合度页面能一眼看到哪些手命中 AI 一选、哪些手属于好手，少了看不懂的趋势噪音。',
+                    '这是一个针对高频查看页面的视觉和可读性修复，建议替换上一版继续测试。',
+                ],
+            },
+            'contact': {'heading': '交流', 'items': ['QQ 群：`299419120`']},
+        },
+        {
+            'language': '繁體中文',
+            'intro': '這是棋力評估介面修正版。重點把「測評」和「吻合度」做成更適合一般使用者閱讀的卡片式介面，並修復真實測試中發現的遮擋、刻度和圖示顯示問題。',
+            'updates': {
+                'heading': '本版主要更新',
+                'items': [
+                    '重做「棋力評估」主介面，只保留黑棋和白棋表現，預設不再顯示一般使用者看不懂的合計棋力。',
+                    '「吻合度」改為原始橫條風格的選點命中圖：上層顯示 AI 一選，下層顯示好手，滑鼠移到命中點可查看具體手數和損失資訊。',
+                    '修復黑棋/白棋統計文字被圖表遮擋的問題，右側機率和說明現在會繪製在上層。',
+                    '修復底部手數刻度顯示不全和尾部 `151 154` 這類重複擁擠問題，尾手會自動替代過近刻度。',
+                    '修復「詳細資料」和說明條裡的驚嘆號圖示裁切問題，並重繪頂部圍棋圖示，避免左側出現異常邊緣。',
+                    '發布前已重新跑棋力評估回歸測試、打包驗證，並完成本機真實啟動 UI 複測。',
+                ],
+            },
+            'before': {
+                'heading': '下載前先看這幾句',
+                'items': [
+                    f'Windows 一般使用者優先下載 {assets_cn["windows_opencl_portable"]}，這是 **OpenCL 版（推薦，免安裝）**。',
+                    f'如果 OpenCL 在你的電腦上不穩定，再改用 {assets_cn["windows_portable"]}。',
+                    f'如果你的電腦是 **NVIDIA 顯示卡**，優先下載 {assets_cn["windows_nvidia_portable"]}。',
+                    f'主推薦整合包已內建 KataGo `{katago_version}` 和預設權重 `{model_source}`。',
+                    '如果你更喜歡安裝流程，再選同系列的 `installer.exe`。',
+                ],
+            },
+            'download': {
+                'heading': '下載建議',
+                'headers': ('你的電腦', '直接下載這個'),
+                'rows': standard_download_rows(STANDARD_DOWNLOAD_LABELS['zh_hant'], assets_cn),
+            },
+            'why': {
+                'heading': '這一版為什麼值得更新',
+                'items': [
+                    '棋力評估不再像除錯表格，更接近使用者能直接看懂的復盤結果頁。',
+                    '吻合度頁面能一眼看到哪些手命中 AI 一選、哪些手屬於好手，少了看不懂的趨勢噪音。',
+                    '這是針對高頻查看頁面的視覺和可讀性修復，建議替換上一版繼續測試。',
+                ],
+            },
+            'contact': {'heading': '交流', 'items': ['QQ 群：`299419120`']},
+        },
+        {
+            'language': 'English',
+            'intro': 'This is a player-strength estimate UI polish update. It turns Assessment and Match Rate into a clearer card-based view and fixes the overlap, axis-label, and icon clipping issues found during real UI testing.',
+            'updates': {
+                'heading': 'Release Highlights',
+                'items': [
+                    'Redesigned the Player Strength Estimate dashboard around Black and White performance only, hiding the confusing combined-strength summary from the default view.',
+                    'Match Rate now uses an original-style hit map: the upper lane shows AI first-choice hits, the lower lane shows good moves, and hovering over a hit reveals the move number and loss details.',
+                    'Fixed Black/White stat labels being covered by the chart; the right-side percentages and descriptions are now painted above the graph layer.',
+                    'Fixed clipped bottom move-number labels and crowded tail labels such as `151 154`; the final move now replaces nearby ticks when needed.',
+                    'Fixed clipped exclamation icons in Detail Data and note strips, and redrew the header Go-stone mark to avoid odd left-edge artifacts.',
+                    'Before release, the player-strength regression tests, packaging build, and real local UI launch checks were rerun.',
+                ],
+            },
+            'before': {
+                'heading': 'Read Before Downloading',
+                'items': [
+                    f'Most Windows users should download {assets["windows_opencl_portable"]}, the **recommended no-install OpenCL build**.',
+                    f'If OpenCL is unreliable on your PC, use {assets["windows_portable"]} instead.',
+                    f'If your PC has an **NVIDIA GPU**, try {assets["windows_nvidia_portable"]} first.',
+                    f'The recommended bundles include KataGo `{katago_version}` and the default weight `{model_source}`.',
+                    'If you prefer an installer, choose the matching `installer.exe` package.',
+                ],
+            },
+            'download': {
+                'heading': 'Download Guide',
+                'headers': ('Your computer', 'Download this file'),
+                'rows': standard_download_rows(STANDARD_DOWNLOAD_LABELS['en'], assets),
+            },
+            'why': {
+                'heading': 'Why This Release Is Worth Updating',
+                'items': [
+                    'Player Strength Estimate now feels like a readable review result page instead of a debug table.',
+                    'The Match Rate page makes first-choice hits and good moves visible at a glance without an unreadable trend chart.',
+                    'This is a focused visual and readability fix for a high-traffic analysis view, suitable for replacing the previous build.',
+                ],
+            },
+            'contact': {'heading': 'Contact', 'items': ['QQ group: `299419120`']},
+        },
+        {
+            'language': '日本語',
+            'intro': 'これは棋力評価 UI を整える更新です。Assessment と Match Rate を読みやすいカード型画面にし、実際の UI テストで見つかった重なり、軸ラベル、アイコンの欠けを修正しました。',
+            'updates': {
+                'heading': '主な更新',
+                'items': [
+                    '棋力評価ダッシュボードを黒番と白番の成績中心に再設計し、既定表示では分かりにくい合計棋力を出さないようにしました。',
+                    'Match Rate は元の横バー風の命中図に変更しました。上段は AI 一選、下段は好手を示し、命中点にマウスを置くと手数と損失情報を確認できます。',
+                    '黒番/白番の統計文字がグラフに隠れる問題を修正し、右側の割合と説明をグラフ層の上に描画するようにしました。',
+                    '下部の手数目盛りが欠ける問題と、末尾の `151 154` のような詰まりを修正しました。終局手は近すぎる目盛りを置き換えます。',
+                    'Detail Data と説明欄の感嘆符アイコンが欠ける問題を修正し、ヘッダーの碁石マークも描き直して左端の異常表示をなくしました。',
+                    'リリース前に棋力評価回帰テスト、package、ローカル実起動 UI チェックを再実行しました。',
+                ],
+            },
+            'before': {
+                'heading': 'ダウンロード前に',
+                'items': [
+                    f'多くの Windows ユーザーは {assets["windows_opencl_portable"]} を選ぶのがおすすめです。これは **推奨 OpenCL 版、インストール不要** です。',
+                    f'OpenCL が不安定な場合は {assets["windows_portable"]} を使ってください。',
+                    f'**NVIDIA GPU** 搭載 PC では {assets["windows_nvidia_portable"]} を優先してください。',
+                    f'推奨バンドルには KataGo `{katago_version}` と既定の重み `{model_source}` が含まれています。',
+                    'インストーラ形式がよい場合は、同じ系列の `installer.exe` を選んでください。',
+                ],
+            },
+            'download': {
+                'heading': 'ダウンロード案内',
+                'headers': ('お使いの環境', 'ダウンロードするファイル'),
+                'rows': standard_download_rows(STANDARD_DOWNLOAD_LABELS['ja'], assets),
+            },
+            'why': {
+                'heading': 'このリリースを更新する理由',
+                'items': [
+                    '棋力評価がデバッグ表ではなく、読みやすい検討結果ページに近づきました。',
+                    'Match Rate では、AI 一選に当たった手と好手がひと目で分かり、読みにくいトレンド図を見る必要が減りました。',
+                    'よく使う分析画面の見た目と可読性を改善した更新で、前回ビルドの置き換えに向いています。',
+                ],
+            },
+            'contact': {'heading': '連絡先', 'items': ['QQ グループ: `299419120`']},
+        },
+        {
+            'language': '한국어',
+            'intro': '이번 버전은 기력 평가 UI 를 다듬은 업데이트입니다. Assessment 와 Match Rate 를 더 읽기 쉬운 카드형 화면으로 바꾸고, 실제 UI 테스트에서 발견된 겹침, 축 라벨, 아이콘 잘림 문제를 수정했습니다.',
+            'updates': {
+                'heading': '주요 업데이트',
+                'items': [
+                    '기력 평가 대시보드를 흑/백 성과 중심으로 다시 구성했고, 기본 화면에서는 일반 사용자가 이해하기 어려운 합계 기력을 숨겼습니다.',
+                    'Match Rate 는 원래 방식에 가까운 가로 막대형 명중 지도로 바뀌었습니다. 위쪽 줄은 AI 1순위, 아래쪽 줄은 좋은 수를 표시하며, 마우스를 올리면 수순과 손실 정보를 볼 수 있습니다.',
+                    '흑/백 통계 문구가 차트에 가려지는 문제를 수정해 오른쪽 확률과 설명이 그래프 위 레이어에 표시되도록 했습니다.',
+                    '아래쪽 수순 눈금이 잘리는 문제와 `151 154` 처럼 끝부분이 빽빽하게 겹치는 문제를 수정했습니다. 마지막 수는 가까운 눈금을 자동으로 대체합니다.',
+                    'Detail Data 와 안내 줄의 느낌표 아이콘 잘림을 수정했고, 헤더의 바둑돌 표시도 다시 그려 왼쪽 가장자리 이상 표시를 없앴습니다.',
+                    '릴리스 전에 기력 평가 회귀 테스트, package, 실제 로컬 UI 실행 확인을 다시 수행했습니다.',
+                ],
+            },
+            'before': {
+                'heading': '다운로드 전 확인',
+                'items': [
+                    f'대부분의 Windows 사용자는 {assets["windows_opencl_portable"]} 를 먼저 받으면 됩니다. 이는 **추천 OpenCL 무설치 빌드** 입니다.',
+                    f'OpenCL 이 PC에서 불안정하면 {assets["windows_portable"]} 를 대신 사용하세요.',
+                    f'**NVIDIA GPU** 가 있다면 {assets["windows_nvidia_portable"]} 를 우선 사용해 보세요.',
+                    f'추천 번들에는 KataGo `{katago_version}` 와 기본 가중치 `{model_source}` 가 포함되어 있습니다.',
+                    '설치형 흐름을 원한다면 같은 계열의 `installer.exe` 를 고르세요.',
+                ],
+            },
+            'download': {
+                'heading': '다운로드 안내',
+                'headers': ('내 컴퓨터', '다운로드할 파일'),
+                'rows': standard_download_rows(STANDARD_DOWNLOAD_LABELS['ko'], assets),
+            },
+            'why': {
+                'heading': '이번 릴리스를 업데이트할 이유',
+                'items': [
+                    '기력 평가가 디버그 표가 아니라 읽기 쉬운 복기 결과 페이지에 더 가까워졌습니다.',
+                    'Match Rate 페이지에서 AI 1순위와 좋은 수를 한눈에 볼 수 있어 읽기 어려운 추세 그래프를 볼 필요가 줄었습니다.',
+                    '자주 보는 분석 화면의 시각과 가독성을 개선한 버전으로, 이전 빌드를 대체해 테스트하기 좋습니다.',
+                ],
+            },
+            'contact': {'heading': '연락처', 'items': ['QQ 그룹: `299419120`']},
+        },
+        {
+            'language': 'ภาษาไทย',
+            'intro': 'นี่คืออัปเดตปรับ UI Player Strength Estimate โดยเปลี่ยนหน้า Assessment และ Match Rate เป็นแบบการ์ดที่อ่านง่ายขึ้น พร้อมแก้ปัญหาข้อความซ้อน label แกนล่าง และไอคอนถูกตัดจากการทดสอบ UI จริง',
+            'updates': {
+                'heading': 'ไฮไลต์ของเวอร์ชันนี้',
+                'items': [
+                    'ออกแบบหน้า Player Strength Estimate ใหม่โดยเน้นผลงานของ Black และ White เท่านั้น และซ่อนค่ารวมที่ผู้ใช้ทั่วไปเข้าใจยากจากหน้าหลัก',
+                    'Match Rate เปลี่ยนเป็น hit map แบบแถบแนวนอนคล้ายของเดิม: แถวบนแสดง AI first choice แถวล่างแสดง good move และเมื่อชี้เมาส์จะเห็น move number กับ loss details',
+                    'แก้ปัญหาข้อความสถิติของ Black/White ถูกกราฟบัง โดยให้เปอร์เซ็นต์และคำอธิบายด้านขวาวาดอยู่บน layer ด้านบน',
+                    'แก้ label เลข move ด้านล่างที่แสดงไม่ครบ และแก้กรณีท้ายกระดานแน่นเกินไปเช่น `151 154` โดยให้ move สุดท้ายแทน tick ที่อยู่ใกล้เกินไป',
+                    'แก้ไอคอนเครื่องหมายตกใจใน Detail Data และ note strip ที่ถูกตัด พร้อมวาด Go-stone mark ด้านหัวใหม่เพื่อลด artifact ด้านซ้าย',
+                    'ก่อน release ได้รัน player-strength regression tests, package build และเปิด UI จริงบนเครื่อง local เพื่อตรวจซ้ำแล้ว',
+                ],
+            },
+            'before': {
+                'heading': 'ก่อนดาวน์โหลด ดูตรงนี้ก่อน',
+                'items': [
+                    f'ผู้ใช้ Windows ส่วนใหญ่แนะนำให้ดาวน์โหลด {assets["windows_opencl_portable"]} ซึ่งเป็น **OpenCL รุ่นแนะนำ แบบไม่ต้องติดตั้ง**',
+                    f'ถ้า OpenCL ทำงานไม่ดีบนเครื่องของคุณ ให้เปลี่ยนไปใช้ {assets["windows_portable"]}',
+                    f'ถ้าเครื่องของคุณมี **การ์ดจอ NVIDIA** แนะนำให้ใช้ {assets["windows_nvidia_portable"]}',
+                    f'แพ็กเกจหลักมี KataGo `{katago_version}` และ weight เริ่มต้น `{model_source}` มาให้แล้ว',
+                    'ถ้าชอบขั้นตอนแบบติดตั้ง ให้เลือกไฟล์ `installer.exe` ในชุดเดียวกัน',
+                ],
+            },
+            'download': {
+                'heading': 'แนะนำการดาวน์โหลด',
+                'headers': ('เครื่องของคุณ', 'ดาวน์โหลดไฟล์นี้'),
+                'rows': standard_download_rows(STANDARD_DOWNLOAD_LABELS['th'], assets),
+            },
+            'why': {
+                'heading': 'ทำไมเวอร์ชันนี้ควรอัปเดต',
+                'items': [
+                    'Player Strength Estimate ดูเหมือนหน้าสรุปผลรีวิวที่อ่านง่ายขึ้น ไม่ใช่ตาราง debug',
+                    'หน้า Match Rate ทำให้เห็นได้ทันทีว่า move ไหนตรง AI first choice และ move ไหนเป็น good move โดยไม่ต้องดูกราฟ trend ที่อ่านยาก',
+                    'เป็นอัปเดตด้านภาพและการอ่านสำหรับหน้าวิเคราะห์ที่ใช้บ่อย เหมาะสำหรับแทนที่ build ก่อนหน้า',
+                ],
+            },
+            'contact': {'heading': 'ติดต่อ', 'items': ['QQ group: `299419120`']},
+        },
+    ]
+    add_nvidia50_download_rows(sections, assets_cn, assets)
+    validate_release_sections(sections)
+    heading = f'# LizzieYzy Next {release_tag} 更新' if release_tag else '# LizzieYzy Next 更新'
     return heading + '\n\n' + '\n\n---\n\n'.join(
         render_language_section(section) for section in sections
     ) + '\n'
