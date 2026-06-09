@@ -109,6 +109,7 @@ class Game:
     white_name: str
     black_rank: str
     white_rank: str
+    date: tuple[int, int, int] | None
     size: int
     komi: float
     handicap: int
@@ -414,6 +415,7 @@ class KataGoProcess:
             "includeMovesOwnership": False,
             "overrideSettings": {
                 "humanSLProfile": query.profile,
+                "ignorePreRootHistory": False,
                 "reportAnalysisWinratesAs": "SIDETOMOVE",
             },
         }
@@ -431,6 +433,12 @@ def main() -> int:
     parser.add_argument("--player", help="Only print sides whose player name contains this text.")
     parser.add_argument("--max-games", type=int, default=3, help="Maximum SGF files to analyze.")
     parser.add_argument("--min-moves", type=int, default=0, help="Skip games shorter than this.")
+    parser.add_argument("--min-date", default="", help="Skip games dated before YYYY-MM-DD.")
+    parser.add_argument(
+        "--require-same-rank",
+        action="store_true",
+        help="Only analyze games whose black and white ranks match after normalization.",
+    )
     parser.add_argument("--board-size", type=int, default=19, help="Only analyze this board size.")
     parser.add_argument(
         "--dedupe-chessid",
@@ -542,6 +550,8 @@ def main() -> int:
         games,
         include_handicap=args.include_handicap,
         min_moves=args.min_moves,
+        min_date=args.min_date,
+        require_same_rank=args.require_same_rank,
         board_size=args.board_size,
         dedupe_chessid=args.dedupe_chessid,
     )
@@ -1267,17 +1277,24 @@ def filter_games(
     *,
     include_handicap: bool,
     min_moves: int,
+    min_date: str,
+    require_same_rank: bool,
     board_size: int,
     dedupe_chessid: bool,
 ) -> list[Game]:
     filtered: list[Game] = []
     seen_ids: set[str] = set()
+    minimum_date = parse_date_key(min_date)
     for game in games:
         if not include_handicap and game.handicap > 0:
             continue
         if board_size > 0 and game.size != board_size:
             continue
         if len(game.moves) < min_moves:
+            continue
+        if minimum_date and game.date and game.date < minimum_date:
+            continue
+        if require_same_rank and normalize_rank_label(game.black_rank) != normalize_rank_label(game.white_rank):
             continue
         if dedupe_chessid:
             chessid = chess_id_from_path(game.path)
@@ -1293,6 +1310,43 @@ def chess_id_from_path(path: Path) -> str:
     if match:
         return match.group(1)
     return str(path.resolve())
+
+
+def parse_sgf_date(raw: str) -> tuple[int, int, int] | None:
+    for match in re.finditer(r"(\d{4})[-/.]?(\d{1,2})?[-/.]?(\d{1,2})?", str(raw or "")):
+        year = int(match.group(1))
+        month = int(match.group(2) or 1)
+        day = int(match.group(3) or 1)
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            return (year, month, day)
+    return None
+
+
+def parse_date_key(raw: str) -> tuple[int, int, int] | None:
+    if not raw:
+        return None
+    return parse_sgf_date(raw)
+
+
+def normalize_rank_label(raw: str) -> str | None:
+    text = str(raw or "").strip()
+    lowered = text.lower()
+    match = re.search(r"(\d+)", text)
+    if not match:
+        if "pro" in lowered or "professional" in lowered:
+            return "10d"
+        return None
+    number = int(match.group(1))
+    if "k" in lowered or "級" in text or "级" in text:
+        if 1 <= number <= 18:
+            return f"{number}k"
+        return None
+    if "p" in lowered or "pro" in lowered or "professional" in lowered:
+        return "11d" if number >= 9 else "10d"
+    if "d" in lowered or "段" in text:
+        if 1 <= number <= 12:
+            return f"{number}d"
+    return None
 
 
 def parse_sgf(path: Path) -> Game:
@@ -1315,6 +1369,7 @@ def parse_sgf(path: Path) -> Game:
         white_name=first_prop(root_props, "PW"),
         black_rank=first_prop(root_props, "BR"),
         white_rank=first_prop(root_props, "WR"),
+        date=parse_sgf_date(first_prop(root_props, "DT")),
         size=size,
         komi=parse_komi(first_prop(root_props, "KM")),
         handicap=int(float(first_prop(root_props, "HA", "0") or 0)),
@@ -1954,7 +2009,8 @@ def gtp_policy_index(move: str, board_size: int) -> int | None:
         return None
     if row < 1 or row > board_size:
         return None
-    return (row - 1) * board_size + column
+    # KataGo policy arrays are row-major from the top-left point A19 to T1.
+    return (board_size - row) * board_size + column
 
 
 def humansl_side_features(

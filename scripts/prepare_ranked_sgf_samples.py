@@ -47,6 +47,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Continue when a rank has fewer than --per-rank SGFs.",
     )
+    parser.add_argument("--min-date", default="", help="Only prepare SGFs dated on or after YYYY-MM-DD.")
+    parser.add_argument(
+        "--require-date",
+        action="store_true",
+        help="Reject SGFs with no parseable DT root property.",
+    )
+    parser.add_argument(
+        "--require-same-rank",
+        action="store_true",
+        help="Only prepare SGFs whose original BR/WR normalize to the same rank.",
+    )
     return parser.parse_args()
 
 
@@ -70,17 +81,39 @@ def main() -> int:
         if source_dir is None:
             missing.append(f"{rank}: no directory")
             continue
-        sgfs = sorted(source_dir.rglob("*.sgf"))
+        candidates = sorted(source_dir.rglob("*.sgf"))
+        sgfs: list[tuple[Path, str, dict[str, str], tuple[int, int, int] | None]] = []
+        rejected = 0
+        minimum_date = parse_date_key(args.min_date)
+        for source in candidates:
+            text = read_sgf(source)
+            props = root_properties(text)
+            date = parse_date_key(props.get("DT", ""))
+            if args.require_date and date is None:
+                rejected += 1
+                continue
+            if minimum_date and (date is None or date < minimum_date):
+                rejected += 1
+                continue
+            if args.require_same_rank:
+                black_rank = normalize_rank(props.get("BR", ""), props.get("PB", ""))
+                white_rank = normalize_rank(props.get("WR", ""), props.get("PW", ""))
+                if not black_rank or black_rank != white_rank:
+                    rejected += 1
+                    continue
+            sgfs.append((source, text, props, date))
         if len(sgfs) < args.per_rank:
-            missing.append(f"{rank}: {len(sgfs)}/{args.per_rank} SGFs")
+            note = f"{rank}: {len(sgfs)}/{args.per_rank} SGFs"
+            if rejected:
+                note += f" after filtering {rejected}"
+            missing.append(note)
             if not args.allow_partial:
                 continue
         selected = sgfs[: args.per_rank]
         rank_out = out_dir / rank
         rank_out.mkdir(parents=True, exist_ok=True)
-        for index, source in enumerate(selected, start=1):
+        for index, (source, text, props, date) in enumerate(selected, start=1):
             target = rank_out / f"{rank}-{index:03d}-{safe_name(source.name)}"
-            text = read_sgf(source)
             with target.open("w", encoding="utf-8", newline="") as handle:
                 handle.write(rewrite_root_ranks(text, rank))
             manifest_rows.append(
@@ -89,6 +122,9 @@ def main() -> int:
                     "index": index,
                     "source": str(source),
                     "prepared": str(target),
+                    "date": format_date(date),
+                    "black_rank": props.get("BR", ""),
+                    "white_rank": props.get("WR", ""),
                 }
             )
 
@@ -134,6 +170,67 @@ def rewrite_root_ranks(text: str, rank: str) -> str:
     return text[: root_match.start(1)] + root + text[root_match.end(1) :]
 
 
+def root_properties(text: str) -> dict[str, str]:
+    root_match = re.search(r"^\s*\(;([^;()]*)", text, flags=re.DOTALL)
+    if not root_match:
+        return {}
+    props: dict[str, str] = {}
+    root = root_match.group(1)
+    for match in re.finditer(r"([A-Za-z]+)((?:\[(?:\\.|[^\]])*\])+)", root):
+        values = re.findall(r"\[((?:\\.|[^\]])*)\]", match.group(2))
+        if values:
+            props[match.group(1).upper()] = unescape_sgf_value(values[0])
+    return props
+
+
+def unescape_sgf_value(value: str) -> str:
+    return re.sub(r"\\(.)", r"\1", value)
+
+
+def parse_date_key(raw: str) -> tuple[int, int, int] | None:
+    for match in re.finditer(r"(\d{4})[-/.]?(\d{1,2})?[-/.]?(\d{1,2})?", str(raw or "")):
+        year = int(match.group(1))
+        month = int(match.group(2) or 1)
+        day = int(match.group(3) or 1)
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            return (year, month, day)
+    return None
+
+
+def format_date(date: tuple[int, int, int] | None) -> str:
+    if date is None:
+        return ""
+    return f"{date[0]:04d}-{date[1]:02d}-{date[2]:02d}"
+
+
+def normalize_rank(text: str, player_name: str = "") -> str | None:
+    if is_strong_ai_name(player_name):
+        return "12d"
+    raw = str(text or "").strip()
+    lowered = raw.lower()
+    match = re.search(r"(\d+)", raw)
+    if not match:
+        if "pro" in lowered or "professional" in lowered:
+            return "10d"
+        return None
+    number = int(match.group(1))
+    if "k" in lowered or "級" in raw or "级" in raw:
+        if 1 <= number <= 18:
+            return f"{number}k"
+        return None
+    if "p" in lowered or "pro" in lowered or "professional" in lowered:
+        return "11d" if number >= 9 else "10d"
+    if "d" in lowered or "段" in raw:
+        if 1 <= number <= 12:
+            return f"{number}d"
+    return None
+
+
+def is_strong_ai_name(name: str) -> bool:
+    lowered = str(name or "").lower()
+    return any(marker in lowered for marker in ("alphago", "katago", "leela", "elf", "fineart", "golaxy"))
+
+
 def set_sgf_property(root: str, prop: str, value: str) -> str:
     encoded = value.replace("\\", "\\\\").replace("]", "\\]")
     pattern = re.compile(rf"{prop}((?:\[(?:\\.|[^\]])*\])+)")
@@ -149,7 +246,10 @@ def safe_name(name: str) -> str:
 
 def write_manifest(path: Path, rows: list[dict[str, str | int]]) -> None:
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["rank", "index", "source", "prepared"])
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["rank", "index", "source", "prepared", "date", "black_rank", "white_rank"],
+        )
         writer.writeheader()
         writer.writerows(rows)
 

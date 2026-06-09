@@ -196,7 +196,7 @@ def gtp_policy_index(move: str, board_size: int) -> int | None:
         return None
     if row < 1 or row > board_size:
         return None
-    return (row - 1) * board_size + column
+    return (board_size - row) * board_size + column
 
 
 def read_katago_version(katago: str, timeout: float = 5.0) -> str:

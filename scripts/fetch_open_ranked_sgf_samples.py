@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import io
 import json
 import re
@@ -36,9 +37,12 @@ from collections import Counter
 from pathlib import Path
 
 
+NETWORK_ERRORS = (urllib.error.URLError, TimeoutError, http.client.RemoteDisconnected, ConnectionError)
+
 OGS_2025_SGF_URL = "https://za3k.com/ogs/ogs_games_2013_to_2025-05/sgfs-by-date.tar.gz"
 JGDB_URL = "https://data.pjreddie.com/files/jgdb.tar.gz"
 DEFAULT_OGS_MIN_DATE = "2025-01-01"
+OGS_GAME_METADATA_URL = "https://online-go.com/api/v1/games/{game_id}"
 OGS_GAME_SGF_URL = "https://online-go.com/api/v1/games/{game_id}/sgf"
 OGS_PLAYERS_URL = "https://online-go.com/api/v1/players/?format=json&page={page}"
 OGS_PLAYER_GAMES_URL = "https://online-go.com/api/v1/players/{player_id}/games?format=json&ordering=-ended&page={page}"
@@ -50,13 +54,19 @@ ORDINARY_RANKS = {f"{rank}k" for rank in range(18, 0, -1)} | {
 }
 PRO_RANKS = {"10d", "11d", "12d"}
 AI_NAME_MARKERS = (
+    "amybot",
     "alphago",
+    "bot",
+    "dangoapp",
+    "doge_bot",
     "katago",
     "leela zero",
     "leelazero",
     "elf opengo",
     "fineart",
+    "gnugo",
     "golaxy",
+    "noob_bot",
 )
 
 
@@ -125,6 +135,12 @@ def parse_args() -> argparse.Namespace:
         help="Maximum newly accepted SGFs any one OGS player may contribute.",
     )
     parser.add_argument(
+        "--ogs-seed-game-limit",
+        type=int,
+        default=120,
+        help="Maximum existing OGS game ids to inspect before falling back to player-list pages.",
+    )
+    parser.add_argument(
         "--ogs-api-progress-interval",
         type=int,
         default=25,
@@ -180,7 +196,7 @@ def main() -> int:
                     args,
                     min_date=args.ogs_min_date,
                 )
-            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+            except (urllib.error.HTTPError, *NETWORK_ERRORS) as exc:
                 if not args.ogs_api_fallback:
                     raise
                 print(
@@ -231,6 +247,8 @@ def stream_source(
     print(f"[fetch] streaming {name}: {url}", flush=True)
     minimum = parse_date_key(min_date) if min_date else None
     last_skip_period = ""
+    player_name_counts = existing_player_name_contributions(out)
+    max_games_per_player = max(1, int(getattr(args, "ogs_player_max_games", 2)))
     with open_url_with_retries(url, args.http_retries, args.retry_delay, args.timeout) as response:
         with tarfile.open(fileobj=response, mode="r|gz") as archive:
             for member in archive:
@@ -259,6 +277,11 @@ def stream_source(
                     continue
                 if not acceptable_game(text, props, args):
                     continue
+                player_names = game_player_names(props)
+                if has_ai_player(player_names):
+                    continue
+                if player_name_limit_reached(player_names, player_name_counts, max_games_per_player):
+                    continue
                 rank = game_bucket_rank(props)
                 if rank not in needed or counts[rank] >= needed[rank]:
                     continue
@@ -268,6 +291,7 @@ def stream_source(
                 seen_hashes.add(digest)
                 counts[rank] += 1
                 args._accepted_new += 1
+                increment_player_name_counts(player_names, player_name_counts)
                 write_ranked_sgf(out, rank, counts[rank], member.name, text)
                 print(f"[fetch] {name}: {rank} {counts[rank]}/{needed[rank]} {member.name}", flush=True)
                 if reached_acceptance_limit(args, counts):
@@ -287,7 +311,7 @@ def open_url_with_retries(url: str, retries: int, retry_delay: int, timeout: int
         try:
             print(f"[fetch] opening {url} attempt {attempt}/{attempts}", flush=True)
             return urllib.request.urlopen(request, timeout=timeout)
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+        except (urllib.error.HTTPError, *NETWORK_ERRORS) as exc:
             status = getattr(exc, "code", None)
             retryable_status = status in {429, 500, 502, 503, 504}
             retryable = retryable_status or not isinstance(exc, urllib.error.HTTPError)
@@ -312,8 +336,9 @@ def sample_ogs_api(
 ) -> None:
     if not needed:
         return
+    player_name_counts = existing_player_name_contributions(out)
     if args.ogs_player_fallback:
-        sample_ogs_players(out, needed, counts, seen_hashes, args)
+        sample_ogs_players(out, needed, counts, seen_hashes, args, player_name_counts)
         if all(counts[rank] >= needed[rank] for rank in needed) or reached_acceptance_limit(args, counts):
             return
     start = int(args.ogs_api_start)
@@ -364,7 +389,7 @@ def sample_ogs_api(
                 print(f"[fetch] OGS API game {game_id} failed: {exc}", flush=True)
             game_id -= step
             continue
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except NETWORK_ERRORS as exc:
             failures += 1
             print(f"[fetch] OGS API game {game_id} failed: {exc}", flush=True)
             time.sleep(max(1.0, float(args.ogs_api_sleep)))
@@ -372,6 +397,7 @@ def sample_ogs_api(
             continue
 
         props = root_properties(text)
+        player_names = game_player_names(props)
         if not meets_min_date(str(game_id), props, args.ogs_min_date):
             reject_counts["date"] += 1
             if scanned % 1000 == 0:
@@ -382,6 +408,16 @@ def sample_ogs_api(
         rejection = game_rejection_reason(text, props, args, needed, counts)
         if rejection:
             reject_counts[rejection] += 1
+            game_id -= step
+            time.sleep(max(0.0, float(args.ogs_api_sleep)))
+            continue
+        if has_ai_player(player_names):
+            reject_counts["bot_or_ai"] += 1
+            game_id -= step
+            time.sleep(max(0.0, float(args.ogs_api_sleep)))
+            continue
+        if player_name_limit_reached(player_names, player_name_counts, int(args.ogs_player_max_games)):
+            reject_counts["player_name_full"] += 1
             game_id -= step
             time.sleep(max(0.0, float(args.ogs_api_sleep)))
             continue
@@ -396,6 +432,7 @@ def sample_ogs_api(
         seen_hashes.add(digest)
         counts[rank] += 1
         args._accepted_new += 1
+        increment_player_name_counts(player_names, player_name_counts)
         write_ranked_sgf(out, rank, counts[rank], f"ogs-api-{game_id}.sgf", text)
         print(
             f"[fetch] OGS API: {rank} {counts[rank]}/{needed[rank]} game {game_id}",
@@ -421,18 +458,34 @@ def sample_ogs_players(
     counts: dict[str, int],
     seen_hashes: set[str],
     args: argparse.Namespace,
+    player_name_counts: Counter[str],
 ) -> None:
     if not needed:
         return
     max_player_pages = max(0, int(args.ogs_player_max_pages))
     max_game_pages = max(1, int(args.ogs_player_games_pages))
     max_games_per_player = max(1, int(args.ogs_player_max_games))
-    if max_player_pages <= 0:
-        return
     player_counts = existing_ogs_player_contributions(out)
     reject_counts: Counter[str] = Counter()
     scanned_players = 0
     accepted_before = int(getattr(args, "_accepted_new", 0) or 0)
+    sample_ogs_seed_players(
+        out,
+        needed,
+        counts,
+        seen_hashes,
+        args,
+        max_game_pages,
+        max_games_per_player,
+        player_counts,
+        player_name_counts,
+        reject_counts,
+    )
+    if all(counts[rank] >= needed[rank] for rank in needed) or reached_acceptance_limit(args, counts):
+        return
+    if max_player_pages <= 0:
+        print("[fetch] OGS player-list fallback disabled after seed player fallback", flush=True)
+        return
     print(
         f"[fetch] OGS player fallback scanning up to {max_player_pages} player pages; "
         f"max_games_per_player={max_games_per_player}",
@@ -443,7 +496,7 @@ def sample_ogs_players(
             break
         try:
             data = fetch_json_url(OGS_PLAYERS_URL.format(page=page), args.timeout)
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        except (urllib.error.HTTPError, *NETWORK_ERRORS, json.JSONDecodeError) as exc:
             print(f"[fetch] OGS player page {page} failed: {exc}", flush=True)
             time.sleep(max(1.0, float(args.ogs_api_sleep)))
             continue
@@ -474,6 +527,7 @@ def sample_ogs_players(
                 max_game_pages,
                 max_games_per_player,
                 player_counts,
+                player_name_counts,
                 reject_counts,
             )
             if accepted:
@@ -498,6 +552,91 @@ def sample_ogs_players(
     )
 
 
+def sample_ogs_seed_players(
+    out: Path,
+    needed: dict[str, int],
+    counts: dict[str, int],
+    seen_hashes: set[str],
+    args: argparse.Namespace,
+    max_game_pages: int,
+    max_games_per_player: int,
+    player_counts: Counter[int],
+    player_name_counts: Counter[str],
+    reject_counts: Counter[str],
+) -> None:
+    game_ids = existing_ogs_seed_game_ids(out, needed, counts, int(args.ogs_seed_game_limit))
+    if not game_ids:
+        print("[fetch] OGS seed player fallback: no existing OGS game ids in missing buckets", flush=True)
+        return
+    accepted_before = int(getattr(args, "_accepted_new", 0) or 0)
+    seen_players: set[int] = set()
+    print(
+        f"[fetch] OGS seed player fallback inspecting {len(game_ids)} existing game ids "
+        "from missing buckets",
+        flush=True,
+    )
+    for index, game_id in enumerate(game_ids, 1):
+        if all(counts[rank] >= needed[rank] for rank in needed) or reached_acceptance_limit(args, counts):
+            break
+        try:
+            game = fetch_json_url(OGS_GAME_METADATA_URL.format(game_id=game_id), args.timeout)
+        except (urllib.error.HTTPError, *NETWORK_ERRORS, json.JSONDecodeError) as exc:
+            reject_counts["seed_game_failed"] += 1
+            print(f"[fetch] OGS seed game {game_id} metadata failed: {exc}", flush=True)
+            time.sleep(max(1.0, float(args.ogs_api_sleep)))
+            continue
+        player_ids = ogs_game_player_ids(game)
+        if not player_ids:
+            reject_counts["seed_no_players"] += 1
+            continue
+        for seed_player_id in player_ids:
+            if seed_player_id > 0:
+                player_counts[seed_player_id] += 1
+        for player_id in player_ids:
+            if player_id in seen_players:
+                continue
+            seen_players.add(player_id)
+            if player_counts.get(player_id, 0) >= max_games_per_player:
+                reject_counts["player_full"] += 1
+                continue
+            accepted = sample_ogs_player_games(
+                out,
+                needed,
+                counts,
+                seen_hashes,
+                args,
+                player_id,
+                max_game_pages,
+                max_games_per_player,
+                player_counts,
+                player_name_counts,
+                reject_counts,
+            )
+            if accepted:
+                print(
+                    f"[fetch] OGS seed player {player_id}: accepted {accepted}; "
+                    f"player_contribution={player_counts.get(player_id, 0)}/{max_games_per_player}",
+                    flush=True,
+                )
+            if all(counts[rank] >= needed[rank] for rank in needed) or reached_acceptance_limit(args, counts):
+                break
+        if index == 1 or index % 10 == 0:
+            accepted_now = int(getattr(args, "_accepted_new", 0) or 0) - accepted_before
+            print(
+                f"[fetch] OGS seed player heartbeat games={index}/{len(game_ids)} "
+                f"players={len(seen_players)} accepted_new={accepted_now} "
+                f"rejects={format_reject_counts(reject_counts)}",
+                flush=True,
+            )
+    accepted_now = int(getattr(args, "_accepted_new", 0) or 0) - accepted_before
+    print(
+        f"[fetch] OGS seed player fallback done games={len(game_ids)} "
+        f"players={len(seen_players)} accepted_new={accepted_now} "
+        f"rejects={format_reject_counts(reject_counts)}",
+        flush=True,
+    )
+
+
 def sample_ogs_player_games(
     out: Path,
     needed: dict[str, int],
@@ -508,6 +647,7 @@ def sample_ogs_player_games(
     max_game_pages: int,
     max_games_per_player: int,
     player_counts: Counter[int],
+    player_name_counts: Counter[str],
     reject_counts: Counter[str],
 ) -> int:
     accepted = 0
@@ -518,7 +658,7 @@ def sample_ogs_player_games(
             break
         try:
             data = fetch_json_url(OGS_PLAYER_GAMES_URL.format(player_id=player_id, page=page), args.timeout)
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        except (urllib.error.HTTPError, *NETWORK_ERRORS, json.JSONDecodeError) as exc:
             reject_counts["player_games_failed"] += 1
             print(f"[fetch] OGS player {player_id} games page {page} failed: {exc}", flush=True)
             time.sleep(max(1.0, float(args.ogs_api_sleep)))
@@ -555,18 +695,25 @@ def sample_ogs_player_games(
                     time.sleep(delay)
                     return accepted
                 continue
-            except (urllib.error.URLError, TimeoutError) as exc:
+            except NETWORK_ERRORS as exc:
                 reject_counts["sgf_failed"] += 1
                 print(f"[fetch] OGS player game {game_id} failed: {exc}", flush=True)
                 time.sleep(max(1.0, float(args.ogs_api_sleep)))
                 continue
             props = root_properties(text)
+            player_names = game_player_names(props)
             if not meets_min_date(str(game_id), props, args.ogs_min_date):
                 reject_counts["date"] += 1
                 continue
             rejection = game_rejection_reason(text, props, args, needed, counts)
             if rejection:
                 reject_counts[rejection] += 1
+                continue
+            if has_ai_player(player_names):
+                reject_counts["bot_or_ai"] += 1
+                continue
+            if player_name_limit_reached(player_names, player_name_counts, max_games_per_player):
+                reject_counts["player_name_full"] += 1
                 continue
             rank = game_bucket_rank(props)
             assert rank is not None
@@ -579,6 +726,7 @@ def sample_ogs_player_games(
             args._accepted_new += 1
             for pid in player_ids:
                 player_counts[pid] += 1
+            increment_player_name_counts(player_names, player_name_counts)
             accepted += 1
             print(
                 f"[fetch] OGS player: {rank} {counts[rank]}/{needed[rank]} "
@@ -639,8 +787,102 @@ def existing_ogs_player_contributions(out: Path) -> Counter[int]:
     return counts
 
 
+def existing_player_name_contributions(out: Path) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    if not out.exists():
+        return counts
+    for path in out.glob("*/*.sgf"):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        props = root_properties(text)
+        increment_player_name_counts(game_player_names(props), counts)
+    return counts
+
+
+def game_player_names(props: dict[str, str]) -> list[str]:
+    return [name for name in (props.get("PB", "").strip(), props.get("PW", "").strip()) if name]
+
+
+def normalize_player_name(name: str) -> str:
+    return re.sub(r"\s+", " ", str(name or "").strip().lower())
+
+
+def has_ai_player(player_names: list[str]) -> bool:
+    return any(is_strong_ai_name(name) for name in player_names)
+
+
+def player_name_limit_reached(player_names: list[str], counts: Counter[str], max_games: int) -> bool:
+    return any(counts.get(normalize_player_name(name), 0) >= max_games for name in player_names if name)
+
+
+def increment_player_name_counts(player_names: list[str], counts: Counter[str]) -> None:
+    for name in player_names:
+        normalized = normalize_player_name(name)
+        if normalized:
+            counts[normalized] += 1
+
+
+def existing_ogs_seed_game_ids(
+    out: Path,
+    needed: dict[str, int],
+    counts: dict[str, int],
+    limit: int,
+) -> list[int]:
+    if not out.exists() or limit <= 0:
+        return []
+    patterns = [
+        re.compile(r"ogs-api-(\d+)\.sgf$", re.IGNORECASE),
+        re.compile(r"ogs-player-\d+(?:-players-[0-9_]+)?-game-(\d+)\.sgf$", re.IGNORECASE),
+    ]
+    game_ids: list[int] = []
+    seen: set[int] = set()
+    missing_ranks = sorted(
+        [rank for rank in needed if counts.get(rank, 0) < needed[rank]],
+        key=lambda rank: (
+            -(needed[rank] - counts.get(rank, 0)),
+            -rank_strength_index(rank),
+        ),
+    )
+    # Start from the rank buckets that still need SGFs. Existing games from the
+    # same bucket are the best source of player ids likely to produce useful
+    # nearby samples.
+    for rank in missing_ranks:
+        rank_dir = out / rank
+        if not rank_dir.exists():
+            continue
+        for path in sorted(rank_dir.glob("*.sgf"), reverse=True):
+            game_id = ogs_game_id_from_name(path.name, patterns)
+            if game_id > 0 and game_id not in seen:
+                seen.add(game_id)
+                game_ids.append(game_id)
+                if len(game_ids) >= limit:
+                    return game_ids
+    return game_ids
+
+
+def rank_strength_index(rank: str) -> int:
+    match = re.fullmatch(r"(\d+)([kd])", rank)
+    if not match:
+        return -999
+    value = int(match.group(1))
+    unit = match.group(2)
+    if unit == "k":
+        return -value
+    return value
+
+
+def ogs_game_id_from_name(name: str, patterns: list[re.Pattern[str]]) -> int:
+    for pattern in patterns:
+        match = pattern.search(name)
+        if match:
+            return int_number(match.group(1))
+    return 0
+
+
 def ogs_game_player_ids(game: dict[str, object]) -> list[int]:
     ids: list[int] = []
+    all_players = game.get("all_players")
+    if isinstance(all_players, list):
+        ids.extend(int_number(value) for value in all_players)
     for color in ("black", "white"):
         value = game.get(color)
         if isinstance(value, int):

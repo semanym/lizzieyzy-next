@@ -70,9 +70,9 @@ class HumanSlFeasibilityProbeTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("missing humanPolicy", result.error or "")
 
-    def test_numeric_policy_uses_gtp_coordinate_index(self) -> None:
+    def test_numeric_policy_uses_top_left_coordinate_index(self) -> None:
         policy = [0.0] * (19 * 19 + 1)
-        policy[probe.gtp_policy_index("D4", 19)] = 0.5  # type: ignore[index]
+        policy[15 * 19 + 3] = 0.5
 
         probability = probe.extract_move_probability(policy, "D4")
 

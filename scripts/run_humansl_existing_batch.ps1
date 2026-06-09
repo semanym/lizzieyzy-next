@@ -25,6 +25,9 @@ $MoveJsonl = Join-Path $Out "move-evaluation.jsonl"
 $Log = Join-Path $Out "batch-evaluate-existing.log"
 $LabelRanks = "18k,17k,16k,15k,14k,13k,12k,11k,10k,9k,8k,7k,6k,5k,4k,3k,2k,1k,1d,2d,3d,4d,5d,6d,7d,8d,9d,10d,11d"
 $Profiles = "rank_18k,rank_17k,rank_16k,rank_15k,rank_14k,rank_13k,rank_12k,rank_11k,rank_10k,rank_9k,rank_8k,rank_7k,rank_6k,rank_5k,rank_4k,rank_3k,rank_2k,rank_1k,rank_1d,rank_2d,rank_3d,rank_4d,rank_5d,rank_6d,rank_7d,rank_8d,rank_9d"
+$OgsMinDate = if ([string]::IsNullOrWhiteSpace($env:OGS_MIN_DATE)) { "2025-01-01" } else { $env:OGS_MIN_DATE }
+$RequirePreparedDate = if ([string]::IsNullOrWhiteSpace($env:REQUIRE_PREPARED_DATE)) { "0" } else { $env:REQUIRE_PREPARED_DATE }
+$RequirePreparedSameRank = if ([string]::IsNullOrWhiteSpace($env:REQUIRE_PREPARED_SAME_RANK)) { "1" } else { $env:REQUIRE_PREPARED_SAME_RANK }
 
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 
@@ -63,8 +66,11 @@ function Invoke-Logged {
 }
 
 "[run] existing SGF batch evaluation" | Set-Content -Path $Log -Encoding UTF8
+Write-Log "ogs_min_date=$OgsMinDate"
+Write-Log "require_prepared_date=$RequirePreparedDate"
+Write-Log "require_prepared_same_rank=$RequirePreparedSameRank"
 
-Invoke-Logged "prepare existing ranked SGFs" "python" @(
+$PrepareArgs = @(
     "scripts\prepare_ranked_sgf_samples.py",
     "--input-root", $SgfByRank,
     "--out", $Prepared,
@@ -72,6 +78,10 @@ Invoke-Logged "prepare existing ranked SGFs" "python" @(
     "--ranks", $LabelRanks,
     "--allow-partial"
 )
+if (-not [string]::IsNullOrWhiteSpace($OgsMinDate)) { $PrepareArgs += @("--min-date", $OgsMinDate) }
+if ($RequirePreparedDate -eq "1") { $PrepareArgs += "--require-date" }
+if ($RequirePreparedSameRank -eq "1") { $PrepareArgs += "--require-same-rank" }
+Invoke-Logged "prepare existing ranked SGFs" "python" $PrepareArgs
 
 Invoke-Logged "evaluate existing ranked SGFs" "python" @(
     "scripts\evaluate_strength_samples.py", "$Prepared\**\*.sgf",

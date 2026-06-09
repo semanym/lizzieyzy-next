@@ -29,6 +29,7 @@ RUN_LOG_NAME = "run.log"
 
 REQUIRED_ROW_FIELDS = ("path", "side", "player", "fox_rank", "analyzed_moves", "samples")
 HUMANSL_REQUIRED_FIELDS = (
+    "human_sl_profiles",
     "human_sl_sample_count",
     "human_sl_move_count",
     "human_sl_best_profile",
@@ -158,6 +159,7 @@ def package_bundle(args: argparse.Namespace) -> None:
         move_rows = load_jsonl_rows(move_jsonl_path)
         if not move_rows:
             raise ValidationError(f"move-level JSONL is empty: {move_jsonl_path}")
+        validate_move_rows(move_rows, require_humansl=True)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -219,6 +221,8 @@ def validate_bundle(bundle: Path, *, require_humansl: bool) -> dict[str, Any]:
         validate_rows(rows, require_humansl=require_humansl)
         move_jsonl_path = root / MOVE_JSONL_NAME
         move_rows = load_jsonl_rows(move_jsonl_path) if move_jsonl_path.exists() else []
+        if move_rows:
+            validate_move_rows(move_rows, require_humansl=require_humansl)
         csv_path = root / CSV_NAME
         if csv_path.exists():
             csv_rows = load_csv_rows(csv_path)
@@ -291,6 +295,8 @@ def merge_bundles(bundles: list[Path], out_dir: Path, *, require_humansl: bool) 
                     merged_move_rows.append(enriched)
 
     validate_rows(merged_rows, require_humansl=require_humansl)
+    if merged_move_rows:
+        validate_move_rows(merged_move_rows, require_humansl=require_humansl)
     write_jsonl(out_dir / JSONL_NAME, merged_rows)
     if merged_move_rows:
         write_jsonl(out_dir / MOVE_JSONL_NAME, merged_move_rows)
@@ -363,8 +369,50 @@ def validate_rows(rows: list[dict[str, Any]], *, require_humansl: bool) -> None:
                 raise ValidationError(
                     f"row {index} missing HumanSL fields: {', '.join(missing_humansl)}"
                 )
-            if int_number(row.get("human_sl_sample_count")) <= 0:
+            profiles = row_profiles(row.get("human_sl_profiles"))
+            if not profiles:
+                raise ValidationError(f"row {index} has no HumanSL profiles")
+            sample_count = int_number(row.get("human_sl_sample_count"))
+            move_count = int_number(row.get("human_sl_move_count"))
+            if sample_count <= 0:
                 raise ValidationError(f"row {index} has no HumanSL samples")
+            if move_count <= 0:
+                raise ValidationError(f"row {index} has no HumanSL moves")
+            if sample_count < move_count * len(profiles):
+                raise ValidationError(
+                    f"row {index} has incomplete HumanSL samples: "
+                    f"{sample_count} samples for {move_count} moves and {len(profiles)} profiles"
+                )
+            averages = row.get("human_sl_average_log_probability_by_profile")
+            if isinstance(averages, dict) and not set(profiles).issubset({str(key) for key in averages}):
+                raise ValidationError(f"row {index} has incomplete HumanSL average log probabilities")
+
+
+def validate_move_rows(rows: list[dict[str, Any]], *, require_humansl: bool) -> None:
+    if not rows:
+        raise ValidationError("move rows are empty")
+    seen: set[tuple[str, str, int]] = set()
+    for index, row in enumerate(rows, start=1):
+        key = (
+            str(row.get("game_key") or row.get("path") or ""),
+            str(row.get("side") or ""),
+            int_number(row.get("move_number")),
+        )
+        if not key[0] or key[1] not in {"B", "W"} or key[2] <= 0:
+            raise ValidationError(f"move row {index} has invalid game/side/move key")
+        if key in seen:
+            raise ValidationError(f"duplicate move row key: {key[0]} {key[1]} {key[2]}")
+        seen.add(key)
+        if require_humansl:
+            profiles = row_profiles(row.get("human_sl_profiles"))
+            if not profiles:
+                raise ValidationError(f"move row {index} has no HumanSL profiles")
+            logp = row.get("human_sl_log_probability_by_profile")
+            if not isinstance(logp, dict) or not set(profiles).issubset({str(key) for key in logp}):
+                raise ValidationError(f"move row {index} has incomplete HumanSL log probabilities")
+            statuses = row.get("human_sl_status_by_profile")
+            if isinstance(statuses, dict) and not set(profiles).issubset({str(key) for key in statuses}):
+                raise ValidationError(f"move row {index} has incomplete HumanSL statuses")
 
 
 def load_jsonl_rows(path: Path) -> list[dict[str, Any]]:
@@ -489,12 +537,16 @@ def safe_slug(value: str) -> str:
 def collect_profiles(rows: list[dict[str, Any]]) -> list[str]:
     profiles: set[str] = set()
     for row in rows:
-        raw = row.get("human_sl_profiles")
-        if isinstance(raw, list):
-            profiles.update(str(item) for item in raw if str(item))
-        elif isinstance(raw, str):
-            profiles.update(split_csv(raw))
+        profiles.update(row_profiles(row.get("human_sl_profiles")))
     return sorted(profiles)
+
+
+def row_profiles(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        return [str(item) for item in raw if str(item)]
+    if isinstance(raw, str):
+        return split_csv(raw)
+    return []
 
 
 def split_csv(value: str) -> list[str]:

@@ -199,14 +199,23 @@ $AutoFetchOpenSgfs = Get-EnvOrDefault "AUTO_FETCH_OPEN_SGFS" "1"
 $RefreshSgfs = Get-EnvOrDefault "REFRESH_SGFS" "0"
 $OgsUrl = Normalize-ExternalValue (Get-EnvOrDefault "OGS_URL" $DefaultOgsUrl)
 $OgsMinDate = Normalize-ExternalValue (Get-EnvOrDefault "OGS_MIN_DATE" "2025-01-01")
+$RequirePreparedDate = Get-EnvOrDefault "REQUIRE_PREPARED_DATE" "0"
+$RequirePreparedSameRank = Get-EnvOrDefault "REQUIRE_PREPARED_SAME_RANK" "1"
 $OgsHttpRetries = [int](Get-EnvOrDefault "OGS_HTTP_RETRIES" "2")
 $OgsRetryDelay = [int](Get-EnvOrDefault "OGS_RETRY_DELAY" "10")
 $OgsTimeout = [int](Get-EnvOrDefault "OGS_TIMEOUT" "30")
 $OgsApiFallback = Get-EnvOrDefault "OGS_API_FALLBACK" "1"
 $OgsApiSleep = Get-EnvOrDefault "OGS_API_SLEEP" "0.5"
+$OgsApiStart = Get-EnvOrDefault "OGS_API_START" "80000000"
+$OgsApiMin = Get-EnvOrDefault "OGS_API_MIN" "70000000"
+$OgsApiStep = Get-EnvOrDefault "OGS_API_STEP" "1"
 $OgsApiMaxRequests = Get-EnvOrDefault "OGS_API_MAX_REQUESTS" "250000"
 $OgsApiProgressInterval = Get-EnvOrDefault "OGS_API_PROGRESS_INTERVAL" "25"
 $OgsPlayerMaxGames = Get-EnvOrDefault "OGS_PLAYER_MAX_GAMES" "2"
+$OgsPlayerMaxPages = Get-EnvOrDefault "OGS_PLAYER_MAX_PAGES" "100"
+$OgsPlayerGamesPages = Get-EnvOrDefault "OGS_PLAYER_GAMES_PAGES" "4"
+$OgsSeedGameLimit = Get-EnvOrDefault "OGS_SEED_GAME_LIMIT" "120"
+$FetchRemainingBackground = Get-EnvOrDefault "FETCH_REMAINING_BACKGROUND" "0"
 $IncrementalFirstBatch = [int](Get-EnvOrDefault "INCREMENTAL_FIRST_BATCH" "8")
 $IncrementalMaxRequests = Get-EnvOrDefault "INCREMENTAL_OGS_API_MAX_REQUESTS" "1000"
 $FetchAfterFirstBatchWaitSeconds = [int](Get-EnvOrDefault "FETCH_AFTER_FIRST_BATCH_WAIT_SECONDS" "60")
@@ -223,6 +232,7 @@ $MinMoves = [int](Get-EnvOrDefault "MIN_MOVES" "80")
 $BatchPositions = [int](Get-EnvOrDefault "BATCH_POSITIONS" "16")
 $HumanBatchPositions = [int](Get-EnvOrDefault "HUMAN_BATCH_POSITIONS" "64")
 $KatagoResponseTimeout = [int](Get-EnvOrDefault "KATAGO_RESPONSE_TIMEOUT" "900")
+$ProbeMaxQueries = [int](Get-EnvOrDefault "PROBE_MAX_QUERIES" "64")
 $Rules = Get-EnvOrDefault "RULES" "Chinese"
 $PushResults = Get-EnvOrDefault "PUSH_RESULTS" "1"
 $PushRemote = Get-EnvOrDefault "PUSH_REMOTE" "origin"
@@ -243,8 +253,13 @@ $script:RunLog = Join-Path $Out "run.log"
 $PreparedSgf = Join-Path $Out "prepared-sgf"
 $EvaluationJsonl = Join-Path $Out "evaluation.jsonl"
 $MoveEvaluationJsonl = Join-Path $Out "move-evaluation.jsonl"
+$RawEvaluationJsonl = $EvaluationJsonl
+$RawMoveEvaluationJsonl = $MoveEvaluationJsonl
+$CorrectedEvaluationJsonl = Join-Path $Out "evaluation-humansl-corrected.jsonl"
+$CorrectedMoveEvaluationJsonl = Join-Path $Out "move-evaluation-humansl-corrected.jsonl"
 $MergedDir = Join-Path $Out "merged"
 $AnalysisDir = Join-Path $Out "analysis"
+$PhaseAbDir = Join-Path $Out "phase-ab"
 $BundlePath = Join-Path $Out "humansl-results-$MachineId.zip"
 $RunId = Get-Date -Format "yyyyMMdd-HHmmss"
 $SyncDir = Join-Path $RepoRoot "humansl-run-results\$RunId-$MachineId"
@@ -262,19 +277,29 @@ Write-Log "human_model=$HumanModel"
 Write-Log "sgf_by_rank_root=$SgfByRankRoot"
 Write-Log "ogs_url=$OgsUrl"
 Write-Log "ogs_min_date=$OgsMinDate"
+Write-Log "require_prepared_date=$RequirePreparedDate"
+Write-Log "require_prepared_same_rank=$RequirePreparedSameRank"
 Write-Log "ogs_http_retries=$OgsHttpRetries"
 Write-Log "ogs_retry_delay=$OgsRetryDelay"
 Write-Log "ogs_timeout=$OgsTimeout"
 Write-Log "ogs_api_fallback=$OgsApiFallback"
 Write-Log "ogs_api_sleep=$OgsApiSleep"
+Write-Log "ogs_api_start=$OgsApiStart"
+Write-Log "ogs_api_min=$OgsApiMin"
+Write-Log "ogs_api_step=$OgsApiStep"
 Write-Log "ogs_api_max_requests=$OgsApiMaxRequests"
 Write-Log "ogs_api_progress_interval=$OgsApiProgressInterval"
 Write-Log "ogs_player_max_games=$OgsPlayerMaxGames"
+Write-Log "ogs_player_max_pages=$OgsPlayerMaxPages"
+Write-Log "ogs_player_games_pages=$OgsPlayerGamesPages"
+Write-Log "ogs_seed_game_limit=$OgsSeedGameLimit"
+Write-Log "fetch_remaining_background=$FetchRemainingBackground"
 Write-Log "incremental_first_batch=$IncrementalFirstBatch"
 Write-Log "incremental_ogs_api_max_requests=$IncrementalMaxRequests"
 Write-Log "fetch_after_first_batch_wait_seconds=$FetchAfterFirstBatchWaitSeconds"
 Write-Log "out=$Out"
 Write-Log "settings per_rank=$PerRank max_visits=$MaxVisits parallel_engines=$ParallelEngines max_moves=$MaxMoves min_moves=$MinMoves"
+Write-Log "probe_max_queries=$ProbeMaxQueries"
 
 Invoke-Logged "KataGo version" $Katago @("version")
 $KatagoVersionPath = Join-Path $Out "katago-version.txt"
@@ -365,6 +390,7 @@ if ($AutoFetchOpenSgfs -eq "1" -and $RefreshSgfs -eq "1" -and (Test-Path -Litera
 }
 
 $FetchRemainingJob = $null
+$FetchRemainingJobDuringEvaluation = $false
 
 if ($AutoFetchOpenSgfs -eq "1") {
     $RemainingFetchArgs = @(
@@ -378,9 +404,15 @@ if ($AutoFetchOpenSgfs -eq "1") {
         "--retry-delay", "$OgsRetryDelay",
         "--timeout", "$OgsTimeout",
         "--ogs-api-sleep", "$OgsApiSleep",
+        "--ogs-api-start", "$OgsApiStart",
+        "--ogs-api-min", "$OgsApiMin",
+        "--ogs-api-step", "$OgsApiStep",
         "--ogs-api-max-requests", "$OgsApiMaxRequests",
         "--ogs-api-progress-interval", "$OgsApiProgressInterval",
         "--ogs-player-max-games", "$OgsPlayerMaxGames",
+        "--ogs-player-max-pages", "$OgsPlayerMaxPages",
+        "--ogs-player-games-pages", "$OgsPlayerGamesPages",
+        "--ogs-seed-game-limit", "$OgsSeedGameLimit",
         "--ranks", $LabelRanks,
         "--append"
     )
@@ -400,9 +432,15 @@ if ($AutoFetchOpenSgfs -eq "1") {
             "--retry-delay", "$OgsRetryDelay",
             "--timeout", "$OgsTimeout",
             "--ogs-api-sleep", "$OgsApiSleep",
+            "--ogs-api-start", "$OgsApiStart",
+            "--ogs-api-min", "$OgsApiMin",
+            "--ogs-api-step", "$OgsApiStep",
             "--ogs-api-max-requests", "$IncrementalMaxRequests",
             "--ogs-api-progress-interval", "$OgsApiProgressInterval",
             "--ogs-player-max-games", "$OgsPlayerMaxGames",
+            "--ogs-player-max-pages", "$OgsPlayerMaxPages",
+            "--ogs-player-games-pages", "$OgsPlayerGamesPages",
+            "--ogs-seed-game-limit", "$OgsSeedGameLimit",
             "--ranks", $IncrementalRanks,
             "--append",
             "--prefer-ogs-api",
@@ -414,7 +452,7 @@ if ($AutoFetchOpenSgfs -eq "1") {
         Invoke-Logged "fetch first incremental SGF batch" "python" $Args
 
         if ((Get-SgfCount $SgfByRankRoot) -gt 0) {
-            Invoke-Logged "prepare first incremental SGF batch" "python" @(
+            $PrepareArgs = @(
                 "scripts\prepare_ranked_sgf_samples.py",
                 "--input-root", $SgfByRankRoot,
                 "--out", $PreparedSgf,
@@ -422,6 +460,10 @@ if ($AutoFetchOpenSgfs -eq "1") {
                 "--ranks", $LabelRanks,
                 "--allow-partial"
             )
+            if (-not [string]::IsNullOrWhiteSpace($OgsMinDate)) { $PrepareArgs += @("--min-date", $OgsMinDate) }
+            if ($RequirePreparedDate -eq "1") { $PrepareArgs += "--require-date" }
+            if ($RequirePreparedSameRank -eq "1") { $PrepareArgs += "--require-same-rank" }
+            Invoke-Logged "prepare first incremental SGF batch" "python" $PrepareArgs
             if ((Get-SgfCount $PreparedSgf) -gt 0) {
                 $FetchRemainingJob = Start-LoggedJob `
                     -Title "fetch remaining SGF samples" `
@@ -457,7 +499,15 @@ if ($AutoFetchOpenSgfs -eq "1") {
         }
     }
 
-    if ($null -eq $FetchRemainingJob) {
+    if ($null -eq $FetchRemainingJob -and $FetchRemainingBackground -eq "1") {
+        $FetchRemainingJob = Start-LoggedJob `
+            -Title "fetch remaining SGF samples" `
+            -File "python" `
+            -Arguments $RemainingFetchArgs `
+            -LogPath (Join-Path $Out "fetch-remaining.log")
+        $FetchRemainingJobDuringEvaluation = $true
+        Write-Log "fetch remaining SGF samples is running in background; continuing to prepare/evaluate current SGFs"
+    } elseif ($null -eq $FetchRemainingJob) {
         Invoke-Logged "fetch remaining SGF samples" "python" $RemainingFetchArgs
     } else {
         Wait-LoggedJob `
@@ -465,6 +515,7 @@ if ($AutoFetchOpenSgfs -eq "1") {
             -Title "fetch remaining SGF samples" `
             -MaxWaitSeconds $FetchAfterFirstBatchWaitSeconds `
             -StopOnTimeout $true
+        $FetchRemainingJob = $null
     }
 } elseif (-not (Test-Path -LiteralPath $SgfByRankRoot -PathType Container)) {
     throw "SGF_BY_RANK_ROOT not found and AUTO_FETCH_OPEN_SGFS is not 1: $SgfByRankRoot"
@@ -475,15 +526,19 @@ if ((Get-SgfCount $SgfByRankRoot) -le 0) {
 }
 
 if ($AutoFetchOpenSgfs -ne "1") {
-    Invoke-Logged "prepare ranked SGFs" "python" @(
+    $PrepareArgs = @(
         "scripts\prepare_ranked_sgf_samples.py",
         "--input-root", $SgfByRankRoot,
         "--out", $PreparedSgf,
         "--per-rank", "$PerRank",
         "--ranks", $LabelRanks
     )
+    if (-not [string]::IsNullOrWhiteSpace($OgsMinDate)) { $PrepareArgs += @("--min-date", $OgsMinDate) }
+    if ($RequirePreparedDate -eq "1") { $PrepareArgs += "--require-date" }
+    if ($RequirePreparedSameRank -eq "1") { $PrepareArgs += "--require-same-rank" }
+    Invoke-Logged "prepare ranked SGFs" "python" $PrepareArgs
 } else {
-    Invoke-Logged "prepare final ranked SGFs" "python" @(
+    $PrepareArgs = @(
         "scripts\prepare_ranked_sgf_samples.py",
         "--input-root", $SgfByRankRoot,
         "--out", $PreparedSgf,
@@ -491,6 +546,10 @@ if ($AutoFetchOpenSgfs -ne "1") {
         "--ranks", $LabelRanks,
         "--allow-partial"
     )
+    if (-not [string]::IsNullOrWhiteSpace($OgsMinDate)) { $PrepareArgs += @("--min-date", $OgsMinDate) }
+    if ($RequirePreparedDate -eq "1") { $PrepareArgs += "--require-date" }
+    if ($RequirePreparedSameRank -eq "1") { $PrepareArgs += "--require-same-rank" }
+    Invoke-Logged "prepare final ranked SGFs" "python" $PrepareArgs
 }
 
 Invoke-Logged "probe HumanSL support" "python" @(
@@ -501,7 +560,7 @@ Invoke-Logged "probe HumanSL support" "python" @(
     "--human-model", $HumanModel,
     "--profiles", $Profiles,
     "--repeats", "2",
-    "--max-queries", "32"
+    "--max-queries", "$ProbeMaxQueries"
 )
 
 Invoke-Logged "evaluate SGFs with KataGo and HumanSL" "python" @(
@@ -525,6 +584,89 @@ Invoke-Logged "evaluate SGFs with KataGo and HumanSL" "python" @(
     "--jsonl", $EvaluationJsonl,
     "--move-jsonl", $MoveEvaluationJsonl
 )
+
+if ((Test-Path -LiteralPath $CorrectedEvaluationJsonl) -or (Test-Path -LiteralPath $CorrectedMoveEvaluationJsonl)) {
+    Invoke-Logged "resume corrected HumanSL-only recompute" "python" @(
+        "scripts\recompute_humansl_from_move_jsonl.py", "$PreparedSgf\**\*.sgf",
+        "--move-jsonl", $RawMoveEvaluationJsonl,
+        "--out-jsonl", $CorrectedEvaluationJsonl,
+        "--out-move-jsonl", $CorrectedMoveEvaluationJsonl,
+        "--katago", $Katago,
+        "--model", $Model,
+        "--config", $Config,
+        "--human-model", $HumanModel,
+        "--human-profiles", $Profiles,
+        "--human-max-visits", "$HumanMaxVisits",
+        "--human-batch-positions", "$HumanBatchPositions",
+        "--katago-response-timeout", "$KatagoResponseTimeout",
+        "--rules", $Rules,
+        "--resume-jsonl"
+    )
+    $EvaluationJsonl = $CorrectedEvaluationJsonl
+    $MoveEvaluationJsonl = $CorrectedMoveEvaluationJsonl
+}
+
+if ($FetchRemainingJobDuringEvaluation -and $null -ne $FetchRemainingJob) {
+    Wait-LoggedJob `
+        -Job $FetchRemainingJob `
+        -Title "fetch remaining SGF samples" `
+        -MaxWaitSeconds $FetchAfterFirstBatchWaitSeconds `
+        -StopOnTimeout $true
+    $FetchRemainingJob = $null
+    $PrepareArgs = @(
+        "scripts\prepare_ranked_sgf_samples.py",
+        "--input-root", $SgfByRankRoot,
+        "--out", $PreparedSgf,
+        "--per-rank", "$PerRank",
+        "--ranks", $LabelRanks,
+        "--allow-partial"
+    )
+    if (-not [string]::IsNullOrWhiteSpace($OgsMinDate)) { $PrepareArgs += @("--min-date", $OgsMinDate) }
+    if ($RequirePreparedDate -eq "1") { $PrepareArgs += "--require-date" }
+    if ($RequirePreparedSameRank -eq "1") { $PrepareArgs += "--require-same-rank" }
+    Invoke-Logged "prepare SGFs after background fetch" "python" $PrepareArgs
+    Invoke-Logged "evaluate SGFs after background fetch" "python" @(
+        "scripts\evaluate_strength_samples.py", "$PreparedSgf\**\*.sgf",
+        "--katago", $Katago,
+        "--model", $Model,
+        "--config", $Config,
+        "--human-model", $HumanModel,
+        "--human-profiles", $Profiles,
+        "--max-games", "100000",
+        "--min-moves", "$MinMoves",
+        "--max-moves", "$MaxMoves",
+        "--max-visits", "$MaxVisits",
+        "--human-max-visits", "$HumanMaxVisits",
+        "--batch-positions", "$BatchPositions",
+        "--human-batch-positions", "$HumanBatchPositions",
+        "--parallel-engines", "$ParallelEngines",
+        "--katago-response-timeout", "$KatagoResponseTimeout",
+        "--rules", $Rules,
+        "--resume-jsonl",
+        "--jsonl", $RawEvaluationJsonl,
+        "--move-jsonl", $RawMoveEvaluationJsonl
+    )
+    if ((Test-Path -LiteralPath $CorrectedEvaluationJsonl) -or (Test-Path -LiteralPath $CorrectedMoveEvaluationJsonl)) {
+        Invoke-Logged "resume corrected HumanSL-only recompute after background fetch" "python" @(
+            "scripts\recompute_humansl_from_move_jsonl.py", "$PreparedSgf\**\*.sgf",
+            "--move-jsonl", $RawMoveEvaluationJsonl,
+            "--out-jsonl", $CorrectedEvaluationJsonl,
+            "--out-move-jsonl", $CorrectedMoveEvaluationJsonl,
+            "--katago", $Katago,
+            "--model", $Model,
+            "--config", $Config,
+            "--human-model", $HumanModel,
+            "--human-profiles", $Profiles,
+            "--human-max-visits", "$HumanMaxVisits",
+            "--human-batch-positions", "$HumanBatchPositions",
+            "--katago-response-timeout", "$KatagoResponseTimeout",
+            "--rules", $Rules,
+            "--resume-jsonl"
+        )
+        $EvaluationJsonl = $CorrectedEvaluationJsonl
+        $MoveEvaluationJsonl = $CorrectedMoveEvaluationJsonl
+    }
+}
 
 Invoke-Logged "package result bundle" "python" @(
     "scripts\humansl_results.py", "package",
@@ -554,6 +696,28 @@ Invoke-Logged "analyze calibration output" "python" @(
     "--min-samples", "40",
     "--outlier-z", "3.5"
 )
+Invoke-Logged "run phase strength A/B experiment" "python" @(
+    "scripts\run_humansl_phase_ab_experiment.py",
+    $MoveEvaluationJsonl,
+    "--out-dir", $PhaseAbDir
+)
+$ReconciliationDir = Join-Path $Out "reconciliation"
+$AnomalyDir = Join-Path $Out "anomalies"
+Invoke-Logged "validate corrected HumanSL outputs" "python" @(
+    "tools\humansl_audit\validate_humansl_corrected_outputs.py",
+    "--summary-jsonl", $EvaluationJsonl,
+    "--move-jsonl", $MoveEvaluationJsonl
+)
+Invoke-Logged "reconcile HumanSL run inputs" "python" @(
+    "tools\humansl_audit\reconcile_humansl_run_inputs.py",
+    "--out", $Out,
+    "--report-dir", $ReconciliationDir
+)
+Invoke-Logged "analyze HumanSL anomalies" "python" @(
+    "tools\humansl_audit\analyze_humansl_anomalies.py",
+    $EvaluationJsonl,
+    "--out-dir", $AnomalyDir
+)
 
 Write-Log "copying result artifacts to $SyncDir"
 New-Item -ItemType Directory -Force -Path $SyncDir | Out-Null
@@ -562,6 +726,15 @@ Copy-Item -LiteralPath $RunLog -Destination $SyncDir -Force
 Copy-Item -LiteralPath $KatagoVersionPath -Destination $SyncDir -Force
 if (Test-Path -LiteralPath (Join-Path $AnalysisDir "analysis.md")) {
     Copy-Item -LiteralPath (Join-Path $AnalysisDir "analysis.md") -Destination $SyncDir -Force
+}
+if (Test-Path -LiteralPath $PhaseAbDir) {
+    Copy-Item -LiteralPath $PhaseAbDir -Destination (Join-Path $SyncDir "phase-ab") -Recurse -Force
+}
+if (Test-Path -LiteralPath $ReconciliationDir) {
+    Copy-Item -LiteralPath $ReconciliationDir -Destination (Join-Path $SyncDir "reconciliation") -Recurse -Force
+}
+if (Test-Path -LiteralPath $AnomalyDir) {
+    Copy-Item -LiteralPath $AnomalyDir -Destination (Join-Path $SyncDir "anomalies") -Recurse -Force
 }
 New-Sha256File -Path (Join-Path $SyncDir (Split-Path -Leaf $BundlePath)) -OutPath (Join-Path $SyncDir "checksums.sha256") | Out-Null
 @"
@@ -587,3 +760,4 @@ if ($PushResults -eq "1") {
 Write-Log "OK bundle=$BundlePath"
 Write-Log "OK sync_dir=$SyncDir"
 Write-Log "OK analysis=$(Join-Path $AnalysisDir "analysis.md")"
+Write-Log "OK phase_ab=$(Join-Path $PhaseAbDir "ab-experiment-report.md")"
