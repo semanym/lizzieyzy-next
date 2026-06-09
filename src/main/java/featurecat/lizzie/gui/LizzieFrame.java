@@ -13731,7 +13731,7 @@ public class LizzieFrame extends JFrame {
           continue;
         }
         Rectangle bounds = rankWindowBounds(window, chartX, y, chartWidth, maxMove);
-        String label = strengthLabel(window.report.strengthBand);
+        String label = strengthLabel(window.report);
         g2.setColor(RANK);
         g2.fillRoundRect(bounds.x, bounds.y, bounds.width, bounds.height, 4, 4);
         if (hoverPoint != null) {
@@ -13875,7 +13875,7 @@ public class LizzieFrame extends JFrame {
             sideName,
             window.firstMove,
             window.lastMove,
-            strengthLabel(window.report.strengthBand));
+            strengthLabel(window.report));
       }
       return null;
     }
@@ -13936,7 +13936,7 @@ public class LizzieFrame extends JFrame {
         if (samples.size() - end > 0 && samples.size() - end < minimumSegmentSamples(sideReport)) {
           end = samples.size();
         }
-        addPerformanceSegment(segments, samples.subList(start, end));
+        addPerformanceSegment(segments, samples.subList(start, end), sideReport);
         start = end;
       }
       return segments;
@@ -13972,14 +13972,19 @@ public class LizzieFrame extends JFrame {
     }
 
     private void addPerformanceSegment(
-        List<MatchWindow> segments, List<PlayerStrengthEstimator.Sample> samples) {
+        List<MatchWindow> segments,
+        List<PlayerStrengthEstimator.Sample> samples,
+        PlayerStrengthEstimator.SideReport sideReport) {
       if (samples.isEmpty()) {
         return;
       }
       int firstMove = samples.get(0).moveNumber;
       int lastMove = samples.get(samples.size() - 1).moveNumber;
       segments.add(
-          new MatchWindow(firstMove, lastMove, PlayerStrengthEstimator.summarizeSamples(samples)));
+          new MatchWindow(
+              firstMove,
+              lastMove,
+              PlayerStrengthEstimator.summarizeSamples(samples, sideReport.model)));
     }
 
     private int adaptiveSegmentSamples(PlayerStrengthEstimator.SideReport report) {
@@ -14019,11 +14024,11 @@ public class LizzieFrame extends JFrame {
       return magnitude * 10;
     }
 
-    private String strengthLabel(String strengthBand) {
-      if (strengthBand == null || strengthBand.trim().isEmpty()) {
+    private String strengthLabel(PlayerStrengthEstimator.SideReport report) {
+      if (report == null || !report.hasSamples()) {
         return "-";
       }
-      return strengthBand.replace("\u804c\u4e1a", "").replace("\u4e00\u7ebf", "");
+      return report.strengthBand.replace("\u804c\u4e1a", "").replace("\u4e00\u7ebf", "");
     }
 
     private String percentText(double value) {
