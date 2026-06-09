@@ -75,6 +75,8 @@ PREFERRED_FIELD_ORDER = [
     "human_sl_best_profile",
     "human_sl_best_second_gap",
     "human_sl_high_low_trend",
+    "human_sl_rank_9d_mistake_probability_loss_1.5",
+    "human_sl_rank_9d_candidate_probabilities",
     "human_sl_stage_best_profile_by_stage",
     "human_sl_average_log_probability_by_profile",
     "human_sl_stage_average_log_probability_by_profile",

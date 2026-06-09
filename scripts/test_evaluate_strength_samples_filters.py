@@ -54,6 +54,48 @@ class EvaluateStrengthSamplesFilterTest(unittest.TestCase):
 
         self.assertEqual(1, len(filtered))
 
+    def test_rank_9d_mistake_probability_counts_probability_outside_acceptable_moves(
+        self,
+    ) -> None:
+        policy = {"D4": 0.40, "Q16": 0.25, "K10": 0.10, "pass": 0.02}
+
+        mistake_probability = evaluator.extract_mistake_probability(
+            policy, ["D4", "Q16", "D4"], 19
+        )
+
+        self.assertAlmostEqual(0.35, mistake_probability)
+
+    def test_humansl_good_moves_uses_katago_good_move_threshold(self) -> None:
+        analysis = {
+            "moveInfos": [
+                {"move": "D4", "order": 0, "scoreMean": 10.0},
+                {"move": "Q16", "order": 1, "scoreMean": 9.0},
+                {"move": "K10", "order": 2, "scoreMean": 8.7},
+            ]
+        }
+
+        self.assertEqual(["D4", "Q16"], evaluator.humansl_good_moves(analysis))
+
+    def test_humansl_acceptable_moves_supports_current_experiment_threshold(self) -> None:
+        analysis = {
+            "moveInfos": [
+                {"move": "D4", "order": 0, "scoreMean": 10.0},
+                {"move": "Q16", "order": 1, "scoreMean": 9.4},
+                {"move": "K10", "order": 2, "scoreMean": 8.6},
+            ]
+        }
+
+        self.assertEqual(["D4", "Q16", "K10"], evaluator.humansl_acceptable_moves(analysis, 1.5))
+
+    def test_candidate_mistake_probability_can_be_recomputed_from_saved_candidates(self) -> None:
+        candidates = [
+            {"move": "D4", "score_loss": 0.0, "human_sl_probability_rank_9d": 0.4},
+            {"move": "Q16", "score_loss": 1.4, "human_sl_probability_rank_9d": 0.3},
+            {"move": "K10", "score_loss": 2.0, "human_sl_probability_rank_9d": 0.1},
+        ]
+
+        self.assertAlmostEqual(0.3, evaluator.candidate_mistake_probability(candidates, 1.5))
+
 
 def write_sgf(path: Path, *, date: str, black_rank: str, white_rank: str) -> Path:
     path.write_text(

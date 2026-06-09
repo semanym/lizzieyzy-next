@@ -73,6 +73,7 @@ HIGH_RANK_HUMANSL_PROFILES = ["rank_5d", "rank_7d", "rank_9d"]
 EXCELLENT_SCORE_LOSS = 0.2
 GREAT_SCORE_LOSS = 0.6
 GOOD_SCORE_LOSS = 1.2
+HUMANSL_MISTAKE_THRESHOLD = 1.5
 INACCURACY_SCORE_LOSS = 4.0
 MISTAKE_SCORE_LOSS = 10.0
 
@@ -139,6 +140,7 @@ class HumanSlQuery:
     played: str
     profile: str
     position_moves: list[tuple[str, str]]
+    candidate_moves: list[dict[str, Any]]
 
 
 @dataclass
@@ -149,6 +151,8 @@ class HumanSlMoveResult:
     move: str
     probability: float | None
     status: str
+    mistake_probability: float | None = None
+    candidate_probabilities: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -1693,7 +1697,9 @@ def evaluate_game(
     human_results: list[HumanSlMoveResult] = []
     if katago is not None and human_profiles:
         human_move_limit = min(len(moves), human_max_moves or len(moves))
-        human_queries = build_humansl_queries(moves[:human_move_limit], human_profiles)
+        human_queries = build_humansl_queries(
+            moves[:human_move_limit], human_profiles, analyses[:human_move_limit]
+        )
         if human_queries:
             streamed_move_keys: set[tuple[int, str]] = set()
 
@@ -1780,15 +1786,61 @@ def evaluate_game(
 
 
 def build_humansl_queries(
-    moves: list[tuple[str, str]], profiles: list[str]
+    moves: list[tuple[str, str]], profiles: list[str], analyses: list[dict[str, Any] | None]
 ) -> list[HumanSlQuery]:
     queries: list[HumanSlQuery] = []
     for index, (color, played) in enumerate(moves):
         move_number = index + 1
         position = moves[:index]
+        candidate_moves = humansl_candidate_moves(analyses[index])
         for profile in profiles:
-            queries.append(HumanSlQuery(move_number, color, played, profile, position))
+            queries.append(
+                HumanSlQuery(
+                    move_number,
+                    color,
+                    played,
+                    profile,
+                    position,
+                    candidate_moves,
+                )
+            )
     return queries
+
+
+def humansl_good_moves(analysis: dict[str, Any] | None) -> list[str]:
+    return humansl_acceptable_moves(analysis, GOOD_SCORE_LOSS)
+
+
+def humansl_acceptable_moves(analysis: dict[str, Any] | None, threshold: float) -> list[str]:
+    return [move["move"] for move in humansl_candidate_moves(analysis) if move["score_loss"] <= threshold]
+
+
+def humansl_candidate_moves(analysis: dict[str, Any] | None) -> list[dict[str, Any]]:
+    move_infos = sorted((analysis or {}).get("moveInfos") or [], key=lambda move: move.get("order", 0))
+    if not move_infos:
+        return []
+    top = move_infos[0]
+    top_score = number(top.get("scoreMean"))
+    candidate_moves: list[dict[str, Any]] = []
+    for fallback_order, move in enumerate(move_infos):
+        move_name = str(move.get("move") or "").strip()
+        if not move_name:
+            continue
+        order = int(move.get("order", fallback_order) or fallback_order)
+        if order >= ADDITIONAL_MOVE_ORDER:
+            continue
+        score_loss = positive(top_score - number(move.get("scoreMean")))
+        candidate_moves.append(
+            {
+                "move": move_name,
+                "order": order,
+                "score_loss": round(score_loss, 6),
+                "score_mean": round(number(move.get("scoreMean")), 6),
+                "winrate": round(number(move.get("winrate")), 6),
+                "prior": round(number(move.get("prior")), 6),
+            }
+        )
+    return candidate_moves
 
 
 def move_detail_rows(
@@ -1824,6 +1876,8 @@ def move_detail_rows(
             )
             status_by_profile[result.profile] = result.status
         best_profile = humansl_best_profile(logp_by_profile)
+        mistake_probability_9d = humansl_rank_mistake_probability(human_rows, "rank_9d")
+        candidate_probabilities_9d = humansl_rank_candidate_probabilities(human_rows, "rank_9d")
         row: dict[str, Any] = {
             "schema_version": "move_detail_v1",
             "path": str(game.path),
@@ -1861,6 +1915,12 @@ def move_detail_rows(
                     "human_sl_best_profile": best_profile,
                     "human_sl_best_second_gap": round(humansl_best_second_gap(logp_by_profile), 6),
                     "human_sl_high_low_trend": round(humansl_high_low_trend(logp_by_profile), 6),
+                    "human_sl_rank_9d_mistake_probability_loss_1.5": (
+                        ""
+                        if mistake_probability_9d is None
+                        else round(mistake_probability_9d, 12)
+                    ),
+                    "human_sl_rank_9d_candidate_probabilities": candidate_probabilities_9d,
                     "human_sl_anomalous_sample_count": sum(
                         1
                         for result in human_rows
@@ -1875,6 +1935,24 @@ def move_detail_rows(
                     row[f"human_sl_logp_{profile}"] = logp_by_profile[profile]
         rows.append(row)
     return rows
+
+
+def humansl_rank_mistake_probability(
+    results: list[HumanSlMoveResult], profile: str
+) -> float | None:
+    for result in results:
+        if result.profile == profile and result.mistake_probability is not None:
+            return result.mistake_probability
+    return None
+
+
+def humansl_rank_candidate_probabilities(
+    results: list[HumanSlMoveResult], profile: str
+) -> list[dict[str, Any]]:
+    for result in results:
+        if result.profile == profile and result.candidate_probabilities is not None:
+            return result.candidate_probabilities
+    return []
 
 
 def completed_humansl_move_rows(
@@ -1948,8 +2026,19 @@ def humansl_result_from_response(
             None,
             "illegal_or_missing_move",
         )
+    candidate_probabilities = extract_candidate_probabilities(policy, query.candidate_moves, board_size)
+    mistake_probability = candidate_mistake_probability(
+        candidate_probabilities, HUMANSL_MISTAKE_THRESHOLD
+    )
     return HumanSlMoveResult(
-        query.move_number, query.color, query.profile, query.played, probability, "ok"
+        query.move_number,
+        query.color,
+        query.profile,
+        query.played,
+        probability,
+        "ok",
+        mistake_probability,
+        candidate_probabilities,
     )
 
 
@@ -1983,6 +2072,73 @@ def extract_move_probability(policy: Any, move: str, board_size: int) -> float |
             if str(item[0]).strip().upper() == normalized_move:
                 return coerce_probability(item[1])
     return None
+
+
+def extract_mistake_probability(policy: Any, good_moves: list[str], board_size: int) -> float | None:
+    if policy is None or not good_moves:
+        return None
+    good_probability = 0.0
+    seen: set[str] = set()
+    for move in good_moves:
+        normalized = str(move or "").strip().upper()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        probability = extract_move_probability(policy, normalized, board_size)
+        if probability is not None:
+            good_probability += probability
+    return clamp(1.0 - good_probability, 0.0, 1.0)
+
+
+def extract_candidate_probabilities(
+    policy: Any, candidate_moves: list[dict[str, Any]], board_size: int
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in candidate_moves:
+        move = str(candidate.get("move") or "").strip()
+        normalized = move.upper()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        row = dict(candidate)
+        probability = extract_move_probability(policy, normalized, board_size)
+        row["human_sl_probability_rank_9d"] = (
+            "" if probability is None else round(probability, 12)
+        )
+        candidates.append(row)
+    return candidates
+
+
+def candidate_mistake_probability(
+    candidate_probabilities: list[dict[str, Any]], threshold: float
+) -> float | None:
+    if not candidate_probabilities:
+        return None
+    acceptable_probability = 0.0
+    found = False
+    for candidate in candidate_probabilities:
+        probability = optional_probability(candidate.get("human_sl_probability_rank_9d"))
+        if probability is None:
+            continue
+        if number(candidate.get("score_loss")) <= threshold:
+            acceptable_probability += probability
+            found = True
+    if not found:
+        return None
+    return clamp(1.0 - acceptable_probability, 0.0, 1.0)
+
+
+def optional_probability(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        probability = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(probability) or probability < 0.0:
+        return None
+    return probability
 
 
 def coerce_probability(value: Any) -> float | None:

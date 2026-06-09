@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate HumanSL move rows by phase and run an offline A/B check.
+"""Aggregate HumanSL move rows by phase and run an offline strength experiment.
 
 The input is the move-level JSONL produced by evaluate_strength_samples.py.
 This script does not run KataGo or HumanSL again. It re-aggregates existing
@@ -10,8 +10,16 @@ move rows into game+side+phase samples:
 - middle_game: moves 61-150
 - endgame: moves 151+
 
-A is the current KataGo-derived strength formula. B keeps the same features and
-adds HumanSL-derived aggregates in a grouped holdout regression.
+The primary comparison is:
+
+- control: existing KataGo-derived strength formula
+- experiment_a: existing formula with difficulty replaced by rank_9d HumanSL
+  mistake probability at score-loss threshold 1.5
+- experiment_b: grouped cross-validated ridge model using experiment_a features
+  plus HumanSL aggregates
+
+The split is rank-stratified and grouped by game key so both sides and all
+phases of the same game stay in the same fold.
 """
 
 from __future__ import annotations
@@ -49,6 +57,10 @@ BASE_FEATURES = [
     "p90_score_equivalent_loss",
     "average_difficulty",
 ]
+HUMANSL_DIFFICULTY_THRESHOLD = 1.5
+BASE_FEATURES_WITHOUT_DIFFICULTY = [
+    feature for feature in BASE_FEATURES if feature != "average_difficulty"
+]
 HUMANSL_FEATURES = [
     "human_sl_best_profile_value_mean",
     "human_sl_best_second_gap_mean",
@@ -56,6 +68,7 @@ HUMANSL_FEATURES = [
     "human_sl_valid_rate",
 ]
 RIDGE_LAMBDA = 1.0
+DEFAULT_FOLDS = 5
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,7 +83,15 @@ def parse_args() -> argparse.Namespace:
         "--test-ratio",
         type=float,
         default=0.2,
-        help="Deterministic game-key holdout ratio.",
+        help="Legacy single-holdout ratio used only when --folds is 1.",
+    )
+    parser.add_argument(
+        "--folds",
+        type=int,
+        default=DEFAULT_FOLDS,
+        help=(
+            "Rank-stratified grouped CV folds. Default 5 is recommended for 25 games per rank."
+        ),
     )
     parser.add_argument(
         "--min-samples",
@@ -108,7 +129,7 @@ def main() -> int:
         return 1
 
     write_csv(out_dir / "phase-strength-samples.csv", samples)
-    result = run_ab(samples, args.test_ratio)
+    result = run_ab(samples, args.test_ratio, args.folds)
     (out_dir / "ab-experiment-results.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -189,6 +210,14 @@ def aggregate_bucket(
     p75_score_equivalent_loss = percentile(equivalent_losses, 0.75)
     p90_score_equivalent_loss = percentile(equivalent_losses, 0.90)
     average_difficulty = 100.0 * mean(float_number(row.get("complexity")) for row in rows)
+    difficulty_values = [humansl_mistake_probability(row) for row in rows]
+    difficulty_values = [value for value in difficulty_values if value is not None]
+    human_sl_9d_mistake_difficulty = (
+        100.0 * mean(difficulty_values) if difficulty_values else average_difficulty
+    )
+    human_sl_9d_difficulty_coverage = (
+        len(difficulty_values) / sample_count if sample_count > 0 else 0.0
+    )
     quality_score = evaluator.quality_score(
         weighted_point_loss,
         average_score_equivalent_loss,
@@ -215,12 +244,25 @@ def aggregate_bucket(
         match_rate,
         average_difficulty,
     )
+    experiment_a_rank_prediction = evaluator.regressed_rank_value(
+        weighted_point_loss,
+        average_score_equivalent_loss,
+        median_score_loss,
+        p75_score_equivalent_loss,
+        p90_score_equivalent_loss,
+        first_choice_rate,
+        good_move_rate,
+        mistake_rate,
+        blunder_rate,
+        match_rate,
+        human_sl_9d_mistake_difficulty,
+    )
     humansl_values = [profile_value(row.get("human_sl_best_profile")) for row in rows]
     humansl_values = [value for value in humansl_values if value is not None]
     humansl_valid = [
         0.0 if int_number(row.get("human_sl_anomalous_sample_count")) > 0 else 1.0 for row in rows
     ]
-    return {
+    sample = {
         "game_key": game_key,
         "side": side,
         "phase": phase,
@@ -232,6 +274,7 @@ def aggregate_bucket(
         "insufficient_samples": sample_count < min_samples,
         "quality_score": round(quality_score, 4),
         "current_rank_prediction": round(current_rank_prediction, 6),
+        "experiment_a_rank_prediction": round(experiment_a_rank_prediction, 6),
         "first_choice_rate": round(first_choice_rate, 6),
         "good_move_rate": round(good_move_rate, 6),
         "match_rate": round(match_rate, 6),
@@ -243,6 +286,8 @@ def aggregate_bucket(
         "p75_score_equivalent_loss": round(p75_score_equivalent_loss, 6),
         "p90_score_equivalent_loss": round(p90_score_equivalent_loss, 6),
         "average_difficulty": round(average_difficulty, 6),
+        "human_sl_9d_mistake_difficulty": round(human_sl_9d_mistake_difficulty, 6),
+        "human_sl_9d_difficulty_coverage": round(human_sl_9d_difficulty_coverage, 6),
         "human_sl_best_profile_value_mean": round(mean(humansl_values), 6) if humansl_values else "",
         "human_sl_best_second_gap_mean": round(
             mean(float_number(row.get("human_sl_best_second_gap")) for row in rows), 6
@@ -252,10 +297,11 @@ def aggregate_bucket(
         ),
         "human_sl_valid_rate": round(mean(humansl_valid), 6),
     }
+    return sample
 
 
-def run_ab(samples: list[dict[str, Any]], test_ratio: float) -> dict[str, Any]:
-    result: dict[str, Any] = {"phases": {}}
+def run_ab(samples: list[dict[str, Any]], test_ratio: float, folds: int) -> dict[str, Any]:
+    result: dict[str, Any] = {"phases": {}, "split": split_description(folds, test_ratio)}
     for phase in PHASES:
         phase_rows = [
             row for row in samples if row["phase"] == phase and not row["insufficient_samples"]
@@ -263,51 +309,197 @@ def run_ab(samples: list[dict[str, Any]], test_ratio: float) -> dict[str, Any]:
         if len(phase_rows) < 20:
             result["phases"][phase] = {"status": "insufficient_rows", "rows": len(phase_rows)}
             continue
-        train = [row for row in phase_rows if not is_test_game(row["game_key"], test_ratio)]
-        test = [row for row in phase_rows if is_test_game(row["game_key"], test_ratio)]
-        if len(train) < 10 or len(test) < 5:
+        if folds <= 1:
+            split_rows = [
+                (
+                    [row for row in phase_rows if not is_test_game(row["game_key"], test_ratio)],
+                    [row for row in phase_rows if is_test_game(row["game_key"], test_ratio)],
+                    "holdout",
+                )
+            ]
+        else:
+            split_rows = stratified_group_folds(phase_rows, folds)
+        fold_results = []
+        for train, test, fold_name in split_rows:
+            if len(train) < 10 or len(test) < 5:
+                continue
+            current_metrics = evaluate_predictions(
+                test,
+                [float_number(row["current_rank_prediction"]) for row in test],
+            )
+            a_metrics = evaluate_predictions(
+                test,
+                [float_number(row["experiment_a_rank_prediction"]) for row in test],
+            )
+            b_features = experiment_features() + HUMANSL_FEATURES
+            b_model = fit_ridge(train, b_features, "rank_value", RIDGE_LAMBDA)
+            b_predictions = [predict(b_model, row, b_features) for row in test]
+            b_metrics = evaluate_predictions(test, b_predictions)
+            fold_results.append(
+                {
+                    "fold": fold_name,
+                    "train_rows": len(train),
+                    "test_rows": len(test),
+                    "control_current_formula": current_metrics,
+                    "experiment_a_9d_difficulty": a_metrics,
+                    "experiment_b_9d_difficulty_plus_humansl": b_metrics,
+                    "delta_mae_A_minus_control": round(
+                        a_metrics["mae"] - current_metrics["mae"], 6
+                    ),
+                    "delta_mae_B_minus_A": round(b_metrics["mae"] - a_metrics["mae"], 6),
+                    "delta_mae_B_minus_control": round(
+                        b_metrics["mae"] - current_metrics["mae"], 6
+                    ),
+                    "coefficients_B": {
+                        "intercept": b_model["intercept"],
+                        **dict(zip(b_features, b_model["coefficients"])),
+                    },
+                }
+            )
+        if not fold_results:
             result["phases"][phase] = {
                 "status": "insufficient_split",
                 "rows": len(phase_rows),
-                "train_rows": len(train),
-                "test_rows": len(test),
+                "folds": len(split_rows),
             }
             continue
-        current_metrics = evaluate_predictions(
-            test,
-            [float_number(row["current_rank_prediction"]) for row in test],
-        )
-        a_model = fit_ridge(train, BASE_FEATURES, "rank_value", RIDGE_LAMBDA)
-        a_predictions = [predict(a_model, row, BASE_FEATURES) for row in test]
-        a_metrics = evaluate_predictions(test, a_predictions)
-        b_features = BASE_FEATURES + HUMANSL_FEATURES
-        model = fit_ridge(train, b_features, "rank_value", RIDGE_LAMBDA)
-        b_predictions = [predict(model, row, b_features) for row in test]
-        b_metrics = evaluate_predictions(test, b_predictions)
-        result["phases"][phase] = {
+        phase_result: dict[str, Any] = {
             "status": "ok",
             "rows": len(phase_rows),
-            "train_rows": len(train),
-            "test_rows": len(test),
-            "current_formula": current_metrics,
-            "A_base_ridge": a_metrics,
-            "B_current_plus_humansl": b_metrics,
-            "delta_mae_A_base_minus_current": round(a_metrics["mae"] - current_metrics["mae"], 6),
-            "delta_mae_B_minus_A": round(b_metrics["mae"] - a_metrics["mae"], 6),
-            "delta_mae_B_minus_current": round(b_metrics["mae"] - current_metrics["mae"], 6),
-            "features_A": BASE_FEATURES,
-            "features_B": b_features,
-            "coefficients_A": {
-                "intercept": a_model["intercept"],
-                **dict(zip(BASE_FEATURES, a_model["coefficients"], strict=True)),
-            },
-            "coefficients_B": {
-                "intercept": model["intercept"],
-                **dict(zip(b_features, model["coefficients"], strict=True)),
-            },
+            "folds": len(fold_results),
+            "test_rows": sum(item["test_rows"] for item in fold_results),
+            "control_current_formula": average_metric_block(
+                item["control_current_formula"] for item in fold_results
+            ),
+            "experiment_a_9d_difficulty": average_metric_block(
+                item["experiment_a_9d_difficulty"] for item in fold_results
+            ),
+            "experiment_b_9d_difficulty_plus_humansl": average_metric_block(
+                item["experiment_b_9d_difficulty_plus_humansl"] for item in fold_results
+            ),
+            "delta_mae_A_minus_control": round(
+                mean(item["delta_mae_A_minus_control"] for item in fold_results), 6
+            ),
+            "delta_mae_B_minus_A": round(
+                mean(item["delta_mae_B_minus_A"] for item in fold_results), 6
+            ),
+            "delta_mae_B_minus_control": round(
+                mean(item["delta_mae_B_minus_control"] for item in fold_results), 6
+            ),
+            "features_control": BASE_FEATURES,
+            "features_A": experiment_features(),
+            "features_B": experiment_features() + HUMANSL_FEATURES,
+            "fold_results": fold_results,
         }
+        result["phases"][phase] = phase_result
     result["coverage"] = coverage(samples)
     return result
+
+
+def split_description(folds: int, test_ratio: float) -> dict[str, Any]:
+    if folds <= 1:
+        return {
+            "method": "single_group_holdout",
+            "test_ratio": test_ratio,
+            "note": "Use only for quick smoke checks; 5-fold stratified grouped CV is recommended.",
+        }
+    return {
+        "method": "rank_stratified_group_cv",
+        "folds": folds,
+        "group_key": "game_key",
+        "note": "Recommended for 25 games per rank: each fold holds out about five games per rank.",
+    }
+
+
+def stratified_group_folds(
+    rows: list[dict[str, Any]], folds: int
+) -> list[tuple[list[dict[str, Any]], list[dict[str, Any]], str]]:
+    fold_count = max(2, folds)
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        groups[str(row["game_key"])].append(row)
+    rank_groups: dict[str, list[str]] = defaultdict(list)
+    for game_key, game_rows in groups.items():
+        ranks = sorted({str(row.get("rank_label") or "") for row in game_rows})
+        rank_groups[ranks[0] if ranks else ""].append(game_key)
+    game_fold: dict[str, int] = {}
+    for rank, game_keys in rank_groups.items():
+        ordered = sorted(game_keys, key=lambda key: stable_hash(f"{rank}:{key}"))
+        for index, game_key in enumerate(ordered):
+            game_fold[game_key] = index % fold_count
+    splits = []
+    for fold in range(fold_count):
+        train: list[dict[str, Any]] = []
+        test: list[dict[str, Any]] = []
+        for row in rows:
+            target = test if game_fold[str(row["game_key"])] == fold else train
+            target.append(row)
+        splits.append((train, test, f"fold_{fold + 1}"))
+    return splits
+
+
+def stable_hash(value: str) -> int:
+    return int(hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:16], 16)
+
+
+def humansl_mistake_probability(row: dict[str, Any]) -> float | None:
+    direct = optional_float_number(row.get("human_sl_rank_9d_mistake_probability_loss_1.5"))
+    if direct is not None:
+        return direct
+    return humansl_mistake_probability_from_candidates(
+        row.get("human_sl_rank_9d_candidate_probabilities"), HUMANSL_DIFFICULTY_THRESHOLD
+    )
+
+
+def humansl_mistake_probability_from_candidates(value: Any, threshold: float) -> float | None:
+    candidates = parse_json_value(value)
+    if not isinstance(candidates, list):
+        return None
+    acceptable_probability = 0.0
+    found = False
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        probability = optional_float_number(candidate.get("human_sl_probability_rank_9d"))
+        if probability is None:
+            continue
+        if float_number(candidate.get("score_loss")) <= threshold:
+            acceptable_probability += probability
+            found = True
+    if not found:
+        return None
+    return max(0.0, min(1.0, 1.0 - acceptable_probability))
+
+
+def parse_json_value(value: Any) -> Any:
+    if isinstance(value, (list, dict)):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return None
+
+
+def experiment_features() -> list[str]:
+    return BASE_FEATURES_WITHOUT_DIFFICULTY + ["human_sl_9d_mistake_difficulty"]
+
+
+def average_metric_block(items: Any) -> dict[str, Any]:
+    blocks = list(items)
+    if not blocks:
+        return {}
+    metric_keys = ["mae", "rmse", "within_1_rank_accuracy", "within_2_rank_accuracy"]
+    averaged = {key: round(mean(block[key] for block in blocks), 6) for key in metric_keys}
+    per_rank_values: dict[str, list[float]] = defaultdict(list)
+    for block in blocks:
+        for rank, value in block.get("per_rank_mae", {}).items():
+            per_rank_values[rank].append(float_number(value))
+    averaged["per_rank_mae"] = {
+        rank: round(mean(values), 6) for rank, values in sorted(per_rank_values.items())
+    }
+    return averaged
 
 
 def filter_samples(
@@ -342,7 +534,7 @@ def fit_ridge(rows: list[dict[str, Any]], features: list[str], target: str, pena
     n = len(features)
     matrix = [[0.0 for _ in range(n)] for _ in range(n)]
     rhs = [0.0 for _ in range(n)]
-    for x_values, y in zip(x_rows, centered_y, strict=True):
+    for x_values, y in zip(x_rows, centered_y):
         for i in range(n):
             rhs[i] += x_values[i] * y
             for j in range(n):
@@ -360,7 +552,7 @@ def fit_ridge(rows: list[dict[str, Any]], features: list[str], target: str, pena
 
 def predict(model: dict[str, Any], row: dict[str, Any], features: list[str]) -> float:
     total = float(model["intercept"])
-    for feature, coefficient in zip(features, model["coefficients"], strict=True):
+    for feature, coefficient in zip(features, model["coefficients"]):
         total += coefficient * (
             (float_number(row.get(feature)) - float(model["means"][feature]))
             / float(model["stds"][feature])
@@ -389,10 +581,10 @@ def solve_linear_system(matrix: list[list[float]], rhs: list[float]) -> list[flo
 
 
 def evaluate_predictions(rows: list[dict[str, Any]], predictions: list[float]) -> dict[str, Any]:
-    errors = [prediction - float_number(row["rank_value"]) for row, prediction in zip(rows, predictions, strict=True)]
+    errors = [prediction - float_number(row["rank_value"]) for row, prediction in zip(rows, predictions)]
     abs_errors = [abs(error) for error in errors]
     per_rank: dict[str, list[float]] = defaultdict(list)
-    for row, error in zip(rows, abs_errors, strict=True):
+    for row, error in zip(rows, abs_errors):
         per_rank[str(row["rank_label"])].append(error)
     return {
         "mae": round(mean(abs_errors), 6),
@@ -436,10 +628,13 @@ def write_markdown(
         "",
         f"- Input: `{args.move_jsonl}`",
         f"- Rows: `{len(samples)}` player-phase samples",
-        f"- Split: deterministic game-key holdout, test_ratio={args.test_ratio}",
+        f"- Split: `{result['split']['method']}`",
+        f"- Folds: `{args.folds}`",
         f"- Ridge lambda: `{RIDGE_LAMBDA}`",
         f"- Exclude labels above: `{args.exclude_labels_above or 'none'}`",
         f"- Exclude HumanSL gap over: `{args.exclude_gap_over if args.exclude_gap_over >= 0 else 'none'}`",
+        "- Decision: do not reserve a fixed validation/experiment split for 25 games per rank; "
+        "use rank-stratified grouped cross-validation so every game is tested once.",
         "",
         "## Coverage",
         "",
@@ -449,32 +644,35 @@ def write_markdown(
         "",
         "## A/B Summary",
         "",
-        "| phase | rows | test | current MAE | A base MAE | B +HumanSL MAE | delta B-A | delta B-current | A <=1 | B <=1 |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| phase | rows | tested | control MAE | A 9d-diff MAE | B +HumanSL MAE | delta A-control | delta B-A | delta B-control | control <=1 | A <=1 | B <=1 |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for phase in PHASES:
         item = result["phases"].get(phase, {})
         if item.get("status") != "ok":
             lines.append(
-                f"| {phase} | {item.get('rows', 0)} | 0 | n/a | n/a | n/a | n/a | n/a | n/a | n/a |"
+                f"| {phase} | {item.get('rows', 0)} | 0 | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |"
             )
             continue
-        current = item["current_formula"]
-        a = item["A_base_ridge"]
-        b = item["B_current_plus_humansl"]
+        current = item["control_current_formula"]
+        a = item["experiment_a_9d_difficulty"]
+        b = item["experiment_b_9d_difficulty_plus_humansl"]
         lines.append(
             f"| {phase} | {item['rows']} | {item['test_rows']} | "
             f"{current['mae']:.3f} | {a['mae']:.3f} | {b['mae']:.3f} | "
-            f"{item['delta_mae_B_minus_A']:.3f} | {item['delta_mae_B_minus_current']:.3f} | "
-            f"{a['within_1_rank_accuracy']:.3f} | {b['within_1_rank_accuracy']:.3f} |"
+            f"{item['delta_mae_A_minus_control']:.3f} | {item['delta_mae_B_minus_A']:.3f} | "
+            f"{item['delta_mae_B_minus_control']:.3f} | "
+            f"{current['within_1_rank_accuracy']:.3f} | "
+            f"{a['within_1_rank_accuracy']:.3f} | "
+            f"{b['within_1_rank_accuracy']:.3f} |"
         )
     lines.extend(
         [
             "",
-            "Current is the existing fixed KataGo-derived formula.",
-            "A is a ridge model trained on the existing aggregate KataGo features.",
-            "B is the same ridge setup with HumanSL aggregates added.",
-            "A negative delta means the right-hand model improved MAE on the holdout split.",
+            "Control is the existing fixed KataGo-derived formula.",
+            "Experiment A keeps the fixed formula but replaces difficulty with the HumanSL rank_9d mistake probability at score-loss threshold 1.5.",
+            "Experiment B uses grouped cross-validated ridge regression on experiment A features plus HumanSL aggregates.",
+            "A negative delta means the right-hand model improved average MAE across folds.",
             "",
         ]
     )

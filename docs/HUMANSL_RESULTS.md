@@ -92,6 +92,11 @@ HumanSL 必填字段：
   "human_sl_best_profile": "rank_3d",
   "human_sl_best_second_gap": 0.123,
   "human_sl_high_low_trend": 0.456,
+  "human_sl_rank_9d_mistake_probability_loss_1.5": 0.27,
+  "human_sl_rank_9d_candidate_probabilities": [
+    {"move": "D4", "order": 0, "score_loss": 0.0, "human_sl_probability_rank_9d": 0.41},
+    {"move": "Q16", "order": 1, "score_loss": 1.2, "human_sl_probability_rank_9d": 0.32}
+  ],
   "human_sl_avg_logp_rank_18k": -4.8,
   "human_sl_avg_logp_rank_10k": -4.2,
   "human_sl_avg_logp_rank_5k": -3.9,
@@ -124,6 +129,34 @@ average_winrate_loss
 mistake_rate
 blunder_rate
 ```
+
+推荐同时生成 `move-evaluation.jsonl`。其中 `human_sl_rank_9d_mistake_probability_loss_1.5`
+是一手棋所在局面的 9d 人类策略错误概率，计算方式是：
+
+- 先用该局面的 KataGo 候选着法找出“可接受集合”。
+- 当前实验组使用相对最佳点目损不超过 1.5 目的集合。
+- 再读取 HumanSL `rank_9d` 在对应集合上的策略概率和。
+- 难度定义为 `1 - P(rank_9d 选择可接受集合)`，即业余高手在该局面下错的概率。
+- 同时保存 `human_sl_rank_9d_candidate_probabilities`，包含 KataGo 候选点、相对最佳点目损和 `rank_9d` 在各候选点上的概率；后续如果要改阈值，可以用这个字段离线重算，不必重新跑 HumanSL。
+
+当前每个段位约 25 盘时，`scripts/run_humansl_phase_ab_experiment.py` 默认不固定切分验证级和实验级，而是使用 5 折、按段位分层、按棋局分组的交叉验证。这样每折每个段位大约 5 盘作为验证，5 折后每盘都被验证一次，同时同一盘的黑白双方和不同阶段不会跨训练/验证泄漏。
+
+如果已有 `move-evaluation.jsonl` 缺少上述难度字段，可以用补分析工具只补缺失字段：
+
+```bash
+python3 tools/humansl_audit/backfill_rank9d_difficulty.py "target/prepared-sgf/**/*.sgf" \
+  --move-jsonl target/humansl-run/move-evaluation.jsonl \
+  --out-move-jsonl target/humansl-run/move-evaluation-rank9d-difficulty.jsonl \
+  --katago "/path/to/katago" \
+  --model "/path/to/default.bin.gz" \
+  --config "/path/to/analysis.cfg" \
+  --human-model "human-sl-models/b18c384nbt-humanv0.bin.gz" \
+  --max-visits 32 \
+  --human-max-visits 1 \
+  --force-overwrite
+```
+
+这个补分析会复制已有完整行，只对缺少 `human_sl_rank_9d_mistake_probability_loss_1.5` 或候选点明细的行重新请求：一次普通 KataGo 候选点分析 + 一次 HumanSL `rank_9d` policy 分析。输出仍是 move-level JSONL，可直接喂给 `scripts/run_humansl_phase_ab_experiment.py`。
 
 ## evaluation_summary_rows.csv
 
